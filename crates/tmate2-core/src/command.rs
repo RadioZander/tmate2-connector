@@ -186,6 +186,27 @@ impl Command {
         })
     }
 
+    /// A value set by turning a knob, one click at a time. The radio's
+    /// reports of it are ignored for a moment after we send one (the echo of
+    /// an earlier click would undo later ones), and of several waiting to be
+    /// sent only the newest goes.
+    pub fn knob_value(&self) -> bool {
+        matches!(
+            self,
+            Command::Filter { .. }
+                | Command::Volume { .. }
+                | Command::Drive { .. }
+                | Command::SquelchLevel { .. }
+                | Command::AgcGain { .. }
+                | Command::RitOffset { .. }
+                | Command::XitOffset { .. }
+                | Command::AfGain { .. }
+                | Command::RfGain { .. }
+                | Command::SquelchKnob { .. }
+                | Command::FilterPreset { .. }
+        )
+    }
+
     /// Unkeying is never refused (TCI-X §4.4), so it is always sent.
     pub fn is_unkey(&self) -> bool {
         matches!(
@@ -200,6 +221,28 @@ impl RadioState {
     /// Raw text and unkeying are always allowed.
     pub fn allows(&self, cmd: &Command) -> bool {
         cmd.is_unkey() || cmd.wire_name().is_none_or(|n| self.can_send(n))
+    }
+
+    /// A knob value (see [`Command::knob_value`]) that is already what the
+    /// state holds, as at the end of a knob's travel: nothing to send.
+    pub fn holds(&self, cmd: &Command) -> bool {
+        let t = |trx: &usize| self.trx(*trx);
+        match cmd {
+            Command::Filter { trx, low, high } => t(trx).is_some_and(|x| x.filter == Some((*low, *high))),
+            Command::Volume { db } => self.volume_db == Some(*db),
+            Command::Drive { trx, pct } => t(trx).is_some_and(|x| x.drive == Some(*pct)),
+            Command::SquelchLevel { trx, db } => t(trx).is_some_and(|x| x.sql_level == Some(*db)),
+            Command::AgcGain { trx, value } => t(trx).is_some_and(|x| x.agc_gain == Some(*value)),
+            Command::RitOffset { trx, hz } => t(trx).is_some_and(|x| x.rit_offset == *hz),
+            Command::XitOffset { trx, hz } => t(trx).is_some_and(|x| x.xit_offset == *hz),
+            Command::AfGain { trx, pct } => t(trx).is_some_and(|x| x.af_gain == Some(*pct)),
+            Command::RfGain { trx, pct } => t(trx).is_some_and(|x| x.rf_gain == Some(*pct)),
+            Command::SquelchKnob { trx, pct } => t(trx).is_some_and(|x| x.squelch == Some(*pct)),
+            Command::FilterPreset { trx, name } => {
+                t(trx).is_some_and(|x| x.filter_preset.as_deref() == Some(name.as_str()))
+            }
+            _ => false,
+        }
     }
 
     /// Optimistically apply a command we are sending, so the display updates

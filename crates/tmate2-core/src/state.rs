@@ -1,6 +1,7 @@
 //! Radio state as reported by the backend (and optimistically updated by the
 //! engine so the display responds instantly while tuning).
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::manifest::Manifest;
@@ -152,6 +153,9 @@ pub struct RadioState {
     /// request). `alert_seq` counts them, so each is shown once.
     pub alert: Option<String>,
     pub alert_seq: u64,
+    /// Commands (by wire name) whose reports from the radio are ignored
+    /// until the time given, because a knob here is setting them right now.
+    pub guards: HashMap<&'static str, Instant>,
 }
 
 impl RadioState {
@@ -175,6 +179,17 @@ impl RadioState {
             return;
         }
         t.vfo[vfo] = hz;
+    }
+
+    /// Ignore the radio's reports of `command` until `until`: a knob here is
+    /// setting it, and the echo of an earlier click would undo later ones.
+    pub fn guard(&mut self, command: &'static str, until: Instant) {
+        self.guards.insert(command, until);
+    }
+
+    /// Reports of `command` are being ignored (see [`RadioState::guard`]).
+    pub fn guarded(&self, command: &str, now: Instant) -> bool {
+        self.guards.get(command).is_some_and(|until| now < *until)
     }
 
     /// Flash a short message on the display.

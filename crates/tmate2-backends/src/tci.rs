@@ -117,6 +117,20 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
     let flag = |i: usize| a.get(i).and_then(|s| b(s));
     let trx = n(0).map(|v| v.max(0) as usize);
 
+    // A knob here is setting this right now: the echo of an earlier click
+    // would undo the later ones. The guard ends when the radio reports what
+    // we hold (it has caught up), or when its time runs out.
+    if state.guarded(&m.name, now) {
+        let mut probe = state.clone();
+        probe.guards.clear();
+        apply(&mut probe, m, now);
+        probe.guards.clone_from(&state.guards);
+        if probe == *state {
+            state.guards.remove(m.name.as_str());
+        }
+        return true;
+    }
+
     macro_rules! set_trx_bool {
         ($field:ident) => {
             if let (Some(t), Some(v)) = (trx, flag(1)) {
@@ -540,6 +554,36 @@ mod tests {
                 "{code}: {t}"
             );
         }
+    }
+
+    #[test]
+    fn reports_of_a_knob_in_use_are_ignored() {
+        let mut s = RadioState::default();
+        let t0 = Instant::now();
+        s.trx_mut(0).af_gain = Some(20);
+        s.guard("af_gain", t0 + std::time::Duration::from_millis(400));
+        // The echo of an earlier click, while the knob is still turning.
+        let echo = parse("af_gain:0,17;").unwrap();
+        assert!(apply(&mut s, &echo, t0 + std::time::Duration::from_millis(50)));
+        assert_eq!(s.trx[0].af_gain, Some(20));
+        // Other reports still apply.
+        apply(&mut s, &parse("rf_gain:0,90;").unwrap(), t0);
+        assert_eq!(s.trx[0].rf_gain, Some(90));
+        // The radio catches up with the value we hold: the guard ends, and
+        // a later change made at the radio is taken at once.
+        let soon = t0 + std::time::Duration::from_millis(100);
+        apply(&mut s, &parse("af_gain:0,20;").unwrap(), soon);
+        assert!(!s.guarded("af_gain", soon));
+        apply(&mut s, &echo, soon);
+        assert_eq!(s.trx[0].af_gain, Some(17));
+        // With no matching report, the guard runs out by itself.
+        s.guard("af_gain", t0 + std::time::Duration::from_millis(400));
+        apply(
+            &mut s,
+            &parse("af_gain:0,5;").unwrap(),
+            t0 + std::time::Duration::from_millis(500),
+        );
+        assert_eq!(s.trx[0].af_gain, Some(5));
     }
 
     #[test]

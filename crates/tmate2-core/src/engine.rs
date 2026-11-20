@@ -12,6 +12,10 @@ use crate::state::{Mode, RadioState};
 
 /// How long VFO echoes from the radio are ignored after local tuning.
 const VFO_GUARD: Duration = Duration::from_millis(400);
+/// The same for a value set with E1 or E2 (AF gain, filter width, …), at
+/// the longest: it ends as soon as the radio reports the value we hold. A
+/// radio on a serial link can be half a second behind a fast-turned knob.
+const KNOB_GUARD: Duration = Duration::from_millis(1500);
 /// Window for measuring main-knob speed (acceleration).
 const ACCEL_WINDOW: Duration = Duration::from_millis(100);
 
@@ -317,6 +321,9 @@ impl Engine {
         if let Command::Vfo { trx, .. } = cmd {
             state.trx_mut(trx).vfo_guard_until = Some(now + VFO_GUARD);
         }
+        if let (true, Some(name)) = (cmd.knob_value(), cmd.wire_name()) {
+            state.guard(name, now + KNOB_GUARD);
+        }
         out.push(cmd);
     }
 
@@ -457,7 +464,8 @@ impl Engine {
                 hz: (x.xit_offset + rs).clamp(-9990, 9990),
             }),
         };
-        if let Some(c) = cmd {
+        // At the end of a knob's travel there is nothing new to send.
+        if let Some(c) = cmd.filter(|c| !state.holds(c)) {
             self.emit(c, now, state, out);
         }
         self.flash_value(f, now, state);
@@ -1251,6 +1259,25 @@ mod tests {
         s.trx[0].vfo_selected = Some(0);
         e.tick(now, &mut s);
         assert_eq!(e.view(now).active_vfo, 0);
+    }
+
+    #[test]
+    fn knob_values_are_guarded_and_stop_at_the_end() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let now = Instant::now();
+        assert_eq!(
+            e.handle(turn(Encoder::E1, 2), now, &mut s),
+            vec![Command::AfGain { trx: 0, pct: 31 }]
+        );
+        // The radio's reports of it are ignored while the knob is in use.
+        assert!(s.guarded("af_gain", now + Duration::from_millis(100)));
+        assert!(!s.guarded("af_gain", now + Duration::from_secs(2)));
+        assert!(!s.guarded("squelch", now));
+        // At the top of its travel there's nothing more to send.
+        s.trx[0].af_gain = Some(100);
+        assert!(e.handle(turn(Encoder::E1, 2), now, &mut s).is_empty());
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL   100"));
     }
 
     #[test]

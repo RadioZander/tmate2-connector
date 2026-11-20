@@ -290,7 +290,8 @@ async fn send(tx: &mut futures_util::stream::SplitSink<Ws, Message>, line: Strin
 }
 
 /// Take `first` plus everything already queued, keeping only the newest VFO
-/// frequency per (trx, vfo) so fast tuning never builds a backlog. With
+/// frequency per (trx, vfo) and the newest of each knob value (AF gain,
+/// filter width, …) so fast turning never builds a backlog. With
 /// TCI-X, anything the server's manifest doesn't take is dropped here too.
 fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: &RadioState) -> Vec<String> {
     let mut batch = vec![first];
@@ -304,6 +305,15 @@ fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: 
                 .iter()
                 .any(|later| matches!(later, Command::Vfo { trx: t, vfo: v, .. } if t == trx && v == vfo));
             if superseded {
+                continue;
+            }
+        }
+        if c.knob_value() {
+            let same = std::mem::discriminant(c);
+            if batch[i + 1..]
+                .iter()
+                .any(|later| std::mem::discriminant(later) == same)
+            {
                 continue;
             }
         }
@@ -495,6 +505,21 @@ mod tests {
         .await;
         assert_eq!(hear(&mut ws2).await, format!("login:g0kad,{PROOF};"));
         let _ = ws.close(None).await;
+    }
+
+    #[test]
+    fn coalesce_keeps_latest_knob_value_only() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Command::AfGain { trx: 0, pct: 12 }).unwrap();
+        tx.send(Command::Mute(true)).unwrap();
+        tx.send(Command::RfGain { trx: 0, pct: 90 }).unwrap();
+        tx.send(Command::AfGain { trx: 0, pct: 13 }).unwrap();
+        let out = coalesce(
+            Command::AfGain { trx: 0, pct: 11 },
+            &mut rx,
+            &RadioState::default(),
+        );
+        assert_eq!(out, vec!["mute:true;", "rf_gain:0,90;", "af_gain:0,13;"]);
     }
 
     #[test]
