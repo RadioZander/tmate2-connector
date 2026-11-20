@@ -1,0 +1,15 @@
+[package]
+name = "tmate2-backends"
+description = "Radio backends (TCI / TCI-X, ...) for the TMATE-2 connector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tmate2-core = { path = "../tmate2-core" }
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+tracing.workspace = true

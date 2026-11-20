@@ -1,0 +1,95 @@
+# TMATE-2 connector configuration
+#
+# Plain TOML: lines starting with # are comments. Edit freely; the program
+# re-reads this file when it starts.
+
+[radio]
+# How to talk to the radio. Currently: "tci".
+backend = "tci"
+# TCI server address. Thetis: Setup > Serial/Network > TCI.
+host = "127.0.0.1"
+port = 50001
+# TCI-X extensions (github.com/g0kad/TCI-X):
+#   "off"  - plain TCI only
+#   "auto" - ask the server; quietly fall back to plain TCI if it doesn't answer
+#   "on"   - like auto, but warn if the server doesn't support TCI-X
+tcix = "auto"
+# Which receiver / transceiver the TMATE-2 controls (0 = the first).
+trx = 0
+
+[display]
+# LCD contrast: 0 is darkest; 128 is faint; 192 and above blanks the LCD.
+contrast = 0
+# Backlight colours as [red, green, blue], each 0-255.
+backlight = [255, 255, 255]
+backlight_tx = [255, 0, 0]
+backlight_disconnected = [255, 120, 0]
+# Small 3-digit readout: "dbm" (e.g. -73 dBm), "s_units" (e.g. S9) or "off".
+readout = "dbm"
+# How long (ms) a value you change with E1 / E2 is shown on the main display.
+flash_ms = 1500
+
+[tuning]
+# Tuning steps for the main knob; the step digit is underlined on the LCD.
+steps_hz = [1, 10, 100, 1000, 10000, 100000]
+# Step to start with (must be one of the above).
+step_hz = 10
+# Main knob acceleration when spun quickly, 0 to 10:
+# 0 = off, 2 = gentle, 5 = normal, 10 = strong.
+acceleration = 5
+# E1 / E2 encoder counts per click (2 on HW1.1 / FW1.5).
+counts_per_detent = 2
+# Filter edge / shift change per E2 click, in Hz.
+filter_step_hz = 50
+# RIT / XIT change per E2 click, in Hz.
+rit_step_hz = 10
+# Modes stepped through by mode_next / mode_prev.
+mode_cycle = ["LSB", "USB", "CWU", "AM", "FM", "DIGU"]
+
+# The bottom row of the LCD shows what each knob is set to. Push the knob to
+# step through its functions (see e1_push / e2_push below).
+#   E1 can be: vol, sql, rfg, drv, nr, nb, an
+#   E2 can be: high, low, shift, rit, xit
+[e1]
+functions = ["vol", "sql", "rfg", "drv", "nr", "nb", "an"]
+
+[e2]
+functions = ["shift", "high", "low", "rit", "xit"]
+
+# What each button and knob push does:
+#   tap  = a short press
+#   hold = pressed for hold_ms or longer
+# Use "none" for nothing. If hold is "none", tap fires as soon as the button
+# is pressed; otherwise tap fires on release (so the two can be told apart).
+# Stepping actions (step_next/prev, e1_next, e2_next, mode_next/prev,
+# band_up/down) used as hold keep repeating while the button stays down.
+#
+# Actions:
+#   band_up  band_down  mode_next  mode_prev  mode:USB (any mode name)
+#   vfo_toggle (main knob tunes A or B)  vfo_a_to_b  vfo_swap
+#   split  rit  xit  rit_clear  lock  mute
+#   nr  nb  anf (automatic notch)  notch (manual notch filter)
+#   mox (transmit on/off!)  ptt (transmit only while the button is held)
+#   tune (tune carrier on/off)
+#   step_next  step_prev
+#   e1_next  e2_next  e1_toggle  e2_toggle   (toggle = on/off for the
+#                                             knob's current function)
+#   raw:<text>   sends <text> to the radio unchanged, e.g. raw:trx:0,true;
+#   none
+[buttons]
+hold_ms = 500
+# Ignore a knob push within this many ms of turning that same knob, and
+# cancel a push if the knob turns while it is held (stops accidental clicks).
+push_lockout_ms = 300
+# While held, repeat a stepping hold action every this many ms (0 = no repeat).
+hold_repeat_ms = 300
+
+f1 = { tap = "mox", hold = "none" }
+f2 = { tap = "nr", hold = "none" }
+f3 = { tap = "nb", hold = "none" }
+f4 = { tap = "anf", hold = "none" }
+f5 = { tap = "band_down", hold = "none" }
+f6 = { tap = "band_up", hold = "none" }
+main_push = { tap = "vfo_toggle", hold = "step_next" }
+e1_push = { tap = "e1_next", hold = "e1_toggle" }
+e2_push = { tap = "e2_next", hold = "e2_toggle" }

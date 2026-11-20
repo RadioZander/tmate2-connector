@@ -21,11 +21,12 @@ const F: u8 = 1 << 5;
 const G: u8 = 1 << 6;
 
 /// Glyph for `ch`, or `None` if it can't be shown on seven segments.
-/// Letters are case-insensitive; where both shapes exist the more legible one is used.
+/// Letters are case-insensitive; each uses whichever case's shape reads best
+/// on seven segments (b, d, n, r, t are lower-case shapes; X and K look like H).
 pub fn glyph(ch: char) -> Option<u8> {
     Some(match ch.to_ascii_uppercase() {
         ' ' => 0,
-        '0' | 'O' | 'D' => A | B | C | D | E | F,
+        '0' | 'O' => A | B | C | D | E | F,
         '1' | 'I' => B | C,
         '2' | 'Z' => A | B | D | E | G,
         '3' => A | B | C | D | G,
@@ -33,13 +34,16 @@ pub fn glyph(ch: char) -> Option<u8> {
         '5' | 'S' => A | C | D | F | G,
         '6' => A | C | D | E | F | G,
         '7' => A | B | C,
-        '8' | 'B' => A | B | C | D | E | F | G,
-        '9' | 'G' => A | B | C | D | F | G,
+        '8' => A | B | C | D | E | F | G,
+        '9' => A | B | C | D | F | G,
+        'B' => C | D | E | F | G,
+        'D' => B | C | D | E | G,
+        'G' => A | C | D | E | F,
         'A' => A | B | C | E | F | G,
         'C' => A | D | E | F,
         'E' => A | D | E | F | G,
         'F' => A | E | F | G,
-        'H' => B | C | E | F | G,
+        'H' | 'X' | 'K' => B | C | E | F | G,
         'J' => B | C | D | E,
         'L' => D | E | F,
         'N' => C | E | G,

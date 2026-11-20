@@ -1,0 +1,15 @@
+[package]
+name = "tmate2-core"
+description = "Radio state, input mapping engine, LCD renderer and configuration for the TMATE-2 connector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tmate2-hid = { path = "../tmate2-hid" }
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+strsim.workspace = true

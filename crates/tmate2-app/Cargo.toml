@@ -1,0 +1,23 @@
+[package]
+name = "tmate2-app"
+description = "TMATE-2 connector: drives the ELAD / Woodbox TMATE-2 and controls a radio over TCI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tmate2"
+path = "src/main.rs"
+
+[dependencies]
+tmate2-hid = { path = "../tmate2-hid" }
+tmate2-core = { path = "../tmate2-core" }
+tmate2-backends = { path = "../tmate2-backends" }
+tokio = { workspace = true, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+directories.workspace = true

@@ -23,7 +23,8 @@ Early development. What exists today:
 |---|---|
 | `tmate2-hid` driver (input reports, encoders, buttons, LCD, backlight, LEDs) | working; input, output and the full LCD map confirmed on HW1.1 / FW1.5 |
 | `tmate2-probe` bring-up tool | working |
-| Mapping engine, config, TCI / TCI-X backend | next |
+| `tmate2` connector: mapping engine, commented TOML config, LCD renderer | working (headless) |
+| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis |
 | CAT backends, HMI emulation, GUI, packaging | planned |
 
 See [docs/hardware-bringup.md](docs/hardware-bringup.md) to help confirm the
@@ -46,7 +47,14 @@ cargo run -p tmate2-probe -- dump     # watch knobs / buttons
 cargo run -p tmate2-probe -- test     # LCD, backlight and click test
 cargo run -p tmate2-probe -- freq 14074000
 cargo run -p tmate2-probe -- walk     # map every LCD segment interactively
+
+cargo run -p tmate2-app -- -v         # run the connector (writes a commented
+                                      # config on first run and says where)
 ```
+
+The configuration is plain, commented TOML: radio connection, display,
+tuning steps and acceleration, the E1 / E2 knob functions, and a tap and a
+hold action for every button and knob push.
 
 ## Licence
 
