@@ -560,6 +560,36 @@ impl Engine {
                 self.active_vfo ^= 1;
                 vec![]
             }
+            // The next of the radio's own settings, round again.
+            Action::Preamp | Action::Att => {
+                let (cap, cur) = match a {
+                    Action::Preamp => ("preamp", &x.preamp),
+                    _ => ("attenuator", &x.attenuator),
+                };
+                let list = state
+                    .tcix
+                    .as_ref()
+                    .filter(|m| m.writable(cap))
+                    .and_then(|m| m.enum_values(cap))
+                    .unwrap_or_default();
+                let at = cur
+                    .as_ref()
+                    .and_then(|c| list.iter().position(|v| v.eq_ignore_ascii_case(c)));
+                let next = at.map_or(0, |i| (i + 1) % list.len().max(1));
+                list.get(next)
+                    .map(|value| match a {
+                        Action::Preamp => Command::Preamp {
+                            trx: t,
+                            value: value.clone(),
+                        },
+                        _ => Command::Attenuator {
+                            trx: t,
+                            value: value.clone(),
+                        },
+                    })
+                    .into_iter()
+                    .collect()
+            }
             Action::Control if state.in_control() => vec![Command::ControlRelease],
             Action::Control => vec![Command::ControlRequest],
             Action::VfoAToB => vec![Command::Vfo {
@@ -1345,6 +1375,38 @@ mod tests {
         assert_eq!(e.view(now).flash.as_deref(), Some("VOL    51"));
         // The radio's AF gain is left alone.
         assert_eq!(s.trx[0].af_gain, Some(30));
+    }
+
+    #[test]
+    fn preamp_and_att_buttons_step_the_radios_settings() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["preamp,rw,enum,off,p1,p2", "attenuator,rw,enum,0,12"]);
+        s.trx[0].preamp = Some("off".into());
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            act(&mut e, Action::Preamp, &mut s);
+            seen.push(s.trx[0].preamp.clone().unwrap());
+        }
+        assert_eq!(seen, ["p1", "p2", "off", "p1"]);
+        // Not yet reported by the radio: the first in its list.
+        assert_eq!(
+            act(&mut e, Action::Att, &mut s),
+            vec![Command::Attenuator {
+                trx: 0,
+                value: "0".into()
+            }]
+        );
+        assert_eq!(
+            act(&mut e, Action::Att, &mut s),
+            vec![Command::Attenuator {
+                trx: 0,
+                value: "12".into()
+            }]
+        );
+        // A radio without them: nothing to send.
+        let mut plain = ic7100(&[]);
+        assert!(act(&mut e, Action::Preamp, &mut plain).is_empty());
+        assert!(act(&mut e, Action::Att, &mut plain).is_empty());
     }
 
     #[test]

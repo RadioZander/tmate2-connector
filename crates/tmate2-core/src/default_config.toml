@@ -104,6 +104,8 @@ NFM = [-5500, 5500]
 #   tune (tune carrier on/off)
 #   step_next  step_prev
 #   control   (TCI-X: ask for control of the radio, or give it up)
+#   preamp  att   (TCI-X: the next of the radio's preamp settings /
+#     attenuator steps, round again; the PRE and ATT lamps show which)
 #   e1_next  e2_next  e1_toggle  e2_toggle   (toggle = on/off for the
 #     knob's current function; for the filter functions it restores the
 #     mode's default filter from [filters])

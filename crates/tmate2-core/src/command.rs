@@ -133,6 +133,16 @@ pub enum Command {
         trx: usize,
         ch: usize,
     },
+    /// TCI-X `preamp`: one of the settings the server lists.
+    Preamp {
+        trx: usize,
+        value: String,
+    },
+    /// TCI-X `attenuator`: one of the steps the server lists, in dB.
+    Attenuator {
+        trx: usize,
+        value: String,
+    },
     /// TCI-X `control_request`: ask for control (granted at once when nobody
     /// has it).
     ControlRequest,
@@ -179,6 +189,8 @@ impl Command {
             Command::AtuTune { .. } => "atu_tune",
             Command::Band { .. } => "band",
             Command::VfoSelect { .. } => "vfo_select",
+            Command::Preamp { .. } => "preamp",
+            Command::Attenuator { .. } => "attenuator",
             Command::ControlRequest => "control_request",
             Command::ControlRelease => "control_release",
             Command::EnableMeters => "rx_sensors_enable",
@@ -276,6 +288,8 @@ impl RadioState {
             Command::FilterPreset { trx, name } => self.trx_mut(*trx).filter_preset = Some(name.clone()),
             &Command::DialLock(on) => self.dial_lock = on,
             &Command::VfoSelect { trx, ch } => self.trx_mut(trx).vfo_selected = Some(ch),
+            Command::Preamp { trx, value } => self.trx_mut(*trx).preamp = Some(value.clone()),
+            Command::Attenuator { trx, value } => self.trx_mut(*trx).attenuator = Some(value.clone()),
             &Command::NotchAt { trx, on, hz } => {
                 let t = self.trx_mut(trx);
                 t.notch = on;

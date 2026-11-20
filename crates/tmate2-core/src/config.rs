@@ -324,6 +324,9 @@ pub enum Action {
     E2Toggle,
     /// TCI-X control (§4.4): ask for it, or give it up if we hold it.
     Control,
+    /// TCI-X `preamp` / `attenuator`: the next of the radio's settings.
+    Preamp,
+    Att,
     Raw(String),
     None,
 }
@@ -356,6 +359,8 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("e1_toggle", Action::E1Toggle),
     ("e2_toggle", Action::E2Toggle),
     ("control", Action::Control),
+    ("preamp", Action::Preamp),
+    ("att", Action::Att),
     ("none", Action::None),
 ];
 

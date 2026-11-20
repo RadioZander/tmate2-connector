@@ -4,7 +4,7 @@ use tmate2_hid::{OutputReport, SegmentMap};
 
 use crate::config::{DisplayConfig, KnobFunction, Readout};
 use crate::engine::View;
-use crate::state::{Mode, RadioState};
+use crate::state::{Lamp, Mode, RadioState};
 
 /// Scale labels that are always shown (scale.10 is deliberately not used).
 const SCALE: [&str; 12] = [
@@ -126,6 +126,27 @@ pub fn render(
     if trx.nb {
         on("left.nb");
     }
+    // The radio's front end, where the server reports it (TCI-X).
+    let (att, pre) = state.front_end_lamps(view.trx);
+    for (lamp, name) in [(att, "att"), (pre, "pre")] {
+        match lamp {
+            Lamp::Off => {}
+            Lamp::On => on(name),
+            Lamp::Step(n) => {
+                on(name);
+                on(&format!("{name}.{n}"));
+            }
+        }
+    }
+    if state.other_antenna(view.trx) {
+        on("left.ant");
+    }
+    if trx.pa_enable == Some(false) {
+        on("lp");
+    }
+    if state.radio_state.as_deref().is_some_and(|r| r != "connected") {
+        on("err");
+    }
     on("e1");
     on(&format!("e1.{}", view.e1.name()));
     on("e2");
@@ -194,6 +215,73 @@ mod tests {
         assert_eq!(s_units_text(-73.0), "9");
         assert_eq!(s_units_text(-63.0), "+10");
         assert_eq!(s_units_text(-50.0), "+20");
+    }
+
+    #[test]
+    fn front_end_lamps_follow_the_radios_own_lists() {
+        let map = SegmentMap::builtin();
+        let cfg = Config::default();
+        let radio = |caps: &[&str]| {
+            let mut s = RadioState {
+                connected: true,
+                ..Default::default()
+            };
+            let mut m = crate::Manifest::default();
+            for line in caps {
+                let args: Vec<String> = line.split(',').map(str::to_string).collect();
+                assert!(m.apply(&args), "{line}");
+            }
+            s.tcix = Some(m);
+            s.trx_mut(0).vfo[0] = 14_074_000;
+            s
+        };
+        let lit = |s: &RadioState| {
+            let mut out = OutputReport::default();
+            render(s, &view(), &cfg.display, &map, &mut out);
+            [
+                "att", "att.1", "att.2", "pre", "pre.1", "pre.2", "left.ant", "lp", "err",
+            ]
+            .into_iter()
+            .filter(|n| out.segment(map.get(n).unwrap()))
+            .collect::<Vec<_>>()
+        };
+        // An IC-7100: two preamps, one attenuator step, two antennas.
+        let mut s = radio(&[
+            "preamp,rw,enum,off,p1,p2",
+            "attenuator,rw,enum,0,12",
+            "antenna,rw,enum,ant1,ant2",
+        ]);
+        assert!(lit(&s).is_empty());
+        let t = s.trx_mut(0);
+        (t.preamp, t.attenuator, t.antenna) = (Some("off".into()), Some("0".into()), Some("ant1".into()));
+        assert!(lit(&s).is_empty());
+        s.trx_mut(0).preamp = Some("p1".into());
+        assert_eq!(lit(&s), ["pre", "pre.1"]);
+        let t = s.trx_mut(0);
+        (t.preamp, t.attenuator, t.antenna) = (Some("p2".into()), Some("12".into()), Some("ant2".into()));
+        // One attenuator step: ATT with no number.
+        assert_eq!(lit(&s), ["att", "pre", "pre.2", "left.ant"]);
+        // Four attenuator steps (a Yaesu): 1, then 2 for the rest.
+        let mut y = radio(&["attenuator,rw,enum,0,6,12,18", "preamp,rw,enum,off,p1"]);
+        y.trx_mut(0).attenuator = Some("6".into());
+        y.trx_mut(0).preamp = Some("p1".into());
+        assert_eq!(lit(&y), ["att", "att.1", "pre"]);
+        y.trx_mut(0).attenuator = Some("18".into());
+        assert_eq!(lit(&y)[..2], ["att", "att.2"]);
+        // A FlexRadio's preamp is a gain in dB: PRE above 0, ATT below.
+        let mut f = radio(&["preamp,rw,enum,-20,-10,0,10,20,30"]);
+        f.trx_mut(0).preamp = Some("20".into());
+        assert_eq!(lit(&f), ["pre"]);
+        f.trx_mut(0).preamp = Some("-10".into());
+        assert_eq!(lit(&f), ["att"]);
+        f.trx_mut(0).preamp = Some("0".into());
+        // The PA off, the receive antenna, and a radio that isn't answering.
+        f.trx_mut(0).pa_enable = Some(false);
+        f.trx_mut(0).rx_antenna = true;
+        f.radio_state = Some("no_response".into());
+        assert_eq!(lit(&f), ["left.ant", "lp", "err"]);
+        f.radio_state = Some("connected".into());
+        assert_eq!(lit(&f), ["left.ant", "lp"]);
     }
 
     #[test]

@@ -260,6 +260,28 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
             }
         }
         "receive_only" => state.receive_only = flag(0).unwrap_or(false),
+        "radio_state" => state.radio_state = a.first().map(|s| s.to_ascii_lowercase()),
+        "preamp" => {
+            if let (Some(t), Some(v)) = (trx, a.get(1)) {
+                state.trx_mut(t).preamp = Some(pct_decode(v));
+            }
+        }
+        "attenuator" => {
+            if let (Some(t), Some(v)) = (trx, a.get(1)) {
+                state.trx_mut(t).attenuator = Some(v.to_string());
+            }
+        }
+        "antenna" => {
+            if let (Some(t), Some(v)) = (trx, a.get(1)) {
+                state.trx_mut(t).antenna = Some(pct_decode(v));
+            }
+        }
+        "rx_antenna" => set_trx_bool!(rx_antenna),
+        "pa_enable" => {
+            if let (Some(t), Some(v)) = (trx, flag(1)) {
+                state.trx_mut(t).pa_enable = Some(v);
+            }
+        }
         "vfo_select" => {
             if let (Some(t), Some(ch)) = (trx, n(1)) {
                 state.trx_mut(t).vfo_selected = Some(ch.clamp(0, 1) as usize);
@@ -336,6 +358,8 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::AtuTune { trx } => format!("atu_tune:{trx};"),
         Command::Band { trx, name } => format!("band:{trx},{};", pct_encode(name)),
         Command::VfoSelect { trx, ch } => format!("vfo_select:{trx},{ch};"),
+        Command::Preamp { trx, value } => format!("preamp:{trx},{};", pct_encode(value)),
+        Command::Attenuator { trx, value } => format!("attenuator:{trx},{};", pct_encode(value)),
         Command::ControlRequest => "control_request;".to_string(),
         Command::ControlRelease => "control_release;".to_string(),
         Command::EnableMeters => "rx_sensors_enable:true,200;".to_string(),
@@ -596,6 +620,38 @@ mod tests {
             t0 + std::time::Duration::from_millis(500),
         );
         assert_eq!(s.trx[0].af_gain, Some(5));
+    }
+
+    #[test]
+    fn front_end_state_and_commands() {
+        let mut s = RadioState::default();
+        let now = Instant::now();
+        for m in split("preamp:0,p2;attenuator:0,12;antenna:0,ant2;rx_antenna:0,true;pa_enable:0,false;radio_state:no_response;") {
+            assert!(apply(&mut s, &m, now), "{m:?}");
+        }
+        let t = &s.trx[0];
+        assert_eq!(
+            (t.preamp.as_deref(), t.attenuator.as_deref()),
+            (Some("p2"), Some("12"))
+        );
+        assert_eq!(t.antenna.as_deref(), Some("ant2"));
+        assert!(t.rx_antenna && t.pa_enable == Some(false));
+        assert_eq!(s.radio_state.as_deref(), Some("no_response"));
+        let e = |c: Command| encode(&c).unwrap();
+        assert_eq!(
+            e(Command::Preamp {
+                trx: 0,
+                value: "p1".into()
+            }),
+            "preamp:0,p1;"
+        );
+        assert_eq!(
+            e(Command::Attenuator {
+                trx: 0,
+                value: "12".into()
+            }),
+            "attenuator:0,12;"
+        );
     }
 
     #[test]
