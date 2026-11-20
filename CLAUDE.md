@@ -116,9 +116,10 @@ ANAN-G2. The original g0orx/pihpsdr has no TCI, only rigctl on port 19090.
   whatever interval is asked for. `tx_sensors:0,mic,rms,peak,swr` is sent only
   while transmitting with forward power.
 - **Filters:** CW filter edges are relative to the sidetone pitch (piHPSDR
-  reports e.g. `-250,250` in both CWL and CWU), unlike Thetis. Not handled
-  yet: sending Thetis-style `[filters]` CW edges would push the passband off
-  the signal. FM ignores filter commands.
+  reports e.g. `-250,250` in both CWL and CWU), unlike Thetis. Plain CW
+  therefore has its own `[filters]` entry, `CW = [-250, 250]`, which is
+  centred on the pitch in both sidebands. Tested on the G2, including the
+  width, high and low knobs in CWL and CWU. FM ignores filter commands.
 - **Quirks:** `audio_stream_channels` and `audio_stream_samples` have no `;`,
   harmless because each message is its own WebSocket frame. No TCI-X reply.
 - **Fixture:** `crates/tmate2-backends/tests/fixtures/pihpsdr-init.tci`.

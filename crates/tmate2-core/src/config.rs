@@ -38,10 +38,15 @@ fn default_filters() -> BTreeMap<String, [i32; 2]> {
 }
 
 impl Config {
-    /// Default filter for a mode, if configured.
+    /// Default filter for a mode: from the file's `[filters]`, else the
+    /// built-in default (so a mode added later works with older files).
     pub fn default_filter(&self, mode: &str) -> Option<(i32, i32)> {
+        static BUILTIN: std::sync::LazyLock<BTreeMap<String, [i32; 2]>> =
+            std::sync::LazyLock::new(default_filters);
+        let mode = mode.to_ascii_uppercase();
         self.filters
-            .get(&mode.to_ascii_uppercase())
+            .get(&mode)
+            .or_else(|| BUILTIN.get(&mode))
             .map(|[lo, hi]| (*lo, *hi))
     }
 }
@@ -707,6 +712,19 @@ mod tests {
         let c = Config::parse(&text).unwrap();
         assert_eq!(c.default_filter("usb"), Some((100, 2500)));
         assert_eq!(Config::default().default_filter("CWL"), Some((-850, -350)));
+    }
+
+    #[test]
+    fn filters_missing_a_mode_fall_back_to_the_builtin() {
+        // A file written before CW was added; its own values still win.
+        let text = DEFAULT_TOML
+            .replace("CW = [-250, 250]\n", "")
+            .replace("USB = [100, 2500]\n", "USB = [200, 2700]\n");
+        let c = Config::parse(&text).unwrap();
+        assert!(!c.filters.contains_key("CW"));
+        assert_eq!(c.default_filter("cw"), Some((-250, 250)));
+        assert_eq!(c.default_filter("USB"), Some((200, 2700)));
+        assert_eq!(c.default_filter("SPEC"), None);
     }
 
     #[test]

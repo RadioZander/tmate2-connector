@@ -1465,11 +1465,20 @@ mod tests {
         assert_eq!(tap(&mut with(Action::ModePrev), &mut s, now), mode(Mode::Usb));
     }
 
+    /// piHPSDR's CW edges are relative to the CW pitch, so plain CW gets a
+    /// filter centred on 0 that suits CWL and CWU alike.
     #[test]
-    fn filter_default_does_nothing_in_plain_cw() {
+    fn filter_default_in_plain_cw_is_centred_on_the_pitch() {
         let mut e = engine_with_f4(Action::FilterDefault);
         let mut s = connected();
         s.trx_mut(0).mode = Some(Mode::Cw);
-        assert_eq!(tap(&mut e, &mut s, Instant::now()), vec![]);
+        assert_eq!(
+            tap(&mut e, &mut s, Instant::now()),
+            vec![Command::Filter {
+                trx: 0,
+                low: -250,
+                high: 250
+            }]
+        );
     }
 }

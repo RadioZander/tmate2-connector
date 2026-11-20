@@ -86,11 +86,15 @@ start = "width"
 # Default receive filter per mode, as [low, high] passband edges in Hz from
 # the carrier (lower-sideband modes are negative). Holding E2 while it is on
 # high, low, width or shift puts the current mode's default back.
+# CW is for software that reports CW without a sideband (piHPSDR): its edges
+# are relative to the CW pitch, so [-250, 250] is 500 Hz centred on the pitch.
+# A mode missing here uses the built-in default.
 [filters]
 LSB = [-2500, -100]
 USB = [100, 2500]
 CWL = [-850, -350]
 CWU = [350, 850]
+CW = [-250, 250]
 DIGL = [-3000, 0]
 DIGU = [0, 3000]
 AM = [-5000, 5000]
