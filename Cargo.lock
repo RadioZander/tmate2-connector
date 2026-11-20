@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "tmate2-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "tmate2-backends"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "tmate2-core",
@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "tmate2-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "strsim",
@@ -3303,7 +3303,7 @@ dependencies = [
 
 [[package]]
 name = "tmate2-hid"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hidapi",
  "serde",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "tmate2-probe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
