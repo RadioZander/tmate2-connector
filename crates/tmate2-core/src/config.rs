@@ -104,7 +104,7 @@ fn default_push_lockout_ms() -> u64 {
 }
 
 fn default_hold_repeat_ms() -> u64 {
-    300
+    500
 }
 
 impl ButtonsConfig {

@@ -711,8 +711,8 @@ mod tests {
         for t in (0..=1200).step_by(10) {
             e.tick(ms(t), &mut s);
         }
-        // Hold fires at 500 ms, then repeats at 800 and 1100 ms: 3 steps.
-        assert_eq!(e.view(ms(1200)).step_hz, 10_000);
+        // Hold fires at 500 ms, then repeats at 1000 ms: 2 steps.
+        assert_eq!(e.view(ms(1200)).step_hz, 1_000);
         e.handle(InputEvent::Released(Button::MainPush), ms(1210), &mut s);
         assert_eq!(e.view(ms(1210)).active_vfo, 0, "no tap after a hold");
     }

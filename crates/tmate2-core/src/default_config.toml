@@ -82,7 +82,7 @@ hold_ms = 500
 # cancel a push if the knob turns while it is held (stops accidental clicks).
 push_lockout_ms = 300
 # While held, repeat a stepping hold action every this many ms (0 = no repeat).
-hold_repeat_ms = 300
+hold_repeat_ms = 500
 
 f1 = { tap = "mox", hold = "none" }
 f2 = { tap = "nr", hold = "none" }
