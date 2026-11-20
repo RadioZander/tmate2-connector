@@ -381,7 +381,7 @@ impl Engine {
         let rs = self.cfg.tuning.rit_step_hz * d;
         let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
         let cmd = match f {
-            KnobFunction::Vol if state.tcix_offers("af_gain") => Some(Command::AfGain {
+            KnobFunction::Vol if radio_af_gain(state) => Some(Command::AfGain {
                 trx: t,
                 pct: (x.af_gain.unwrap_or(50) + d).clamp(0, 100),
             }),
@@ -688,6 +688,13 @@ pub fn available(f: KnobFunction, s: &RadioState) -> bool {
     }
 }
 
+/// VOL is the radio's own AF gain (TCI-X `af_gain`): where the server
+/// offers that and no `volume`. A server with a `volume` of its own is the
+/// program the operator listens through (KADRAD's relay), and VOL is that.
+fn radio_af_gain(s: &RadioState) -> bool {
+    s.tcix_offers("af_gain") && !s.tcix_offers("volume")
+}
+
 /// The radio has named filter presets (TCI-X `filter`) and no continuously
 /// adjustable passband.
 fn uses_presets(s: &RadioState) -> bool {
@@ -722,7 +729,7 @@ pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize, volume: Volum
     let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
     let num = |v: Option<i32>| v.map_or("--".to_string(), |v| v.to_string());
     let (label, value) = match f {
-        KnobFunction::Vol if state.tcix_offers("af_gain") => ("VOL", num(x.af_gain)),
+        KnobFunction::Vol if radio_af_gain(state) => ("VOL", num(x.af_gain)),
         KnobFunction::Sql if state.tcix_offers("squelch") => ("SQL", num(x.squelch)),
         KnobFunction::Rfg if state.tcix_offers("rf_gain") => ("RFG", num(x.rf_gain)),
         // Presets show as their place in the list, 1 first.
@@ -1321,6 +1328,23 @@ mod tests {
         assert_eq!(thetis.mode_wire_name(Mode::Fm), "FM");
         // With no list, our own names.
         assert_eq!(connected().mode_wire_name(Mode::CwU), "CWU");
+    }
+
+    #[test]
+    fn vol_is_the_programs_volume_where_the_server_has_one() {
+        // KADRAD's relay: the hub's manifest plus its own `volume`.
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["volume,rw,range,-60,0,0.1,db"]);
+        s.volume_db = Some(-30.0);
+        let now = Instant::now();
+        let out = e.handle(turn(Encoder::E1, 2), now, &mut s);
+        assert!(
+            matches!(out[..], [Command::Volume { db }] if (-29.5..-29.3).contains(&db)),
+            "{out:?}"
+        );
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL    51"));
+        // The radio's AF gain is left alone.
+        assert_eq!(s.trx[0].af_gain, Some(30));
     }
 
     #[test]
