@@ -1,5 +1,12 @@
 //! `tmate2`: the TMATE-2 connector.
 
+// Windows release builds with the GUI start without a console window; see
+// `windows_console` for how terminal output still works.
+#![cfg_attr(
+    all(windows, feature = "gui", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod device;
 #[cfg(feature = "gui")]
 mod gui;
@@ -27,7 +34,11 @@ use tmate2_hid::{OutputReport, SegmentMap};
 use crate::shared::{LogBuffer, Shared};
 
 #[derive(Parser)]
-#[command(version, about = "Connects the ELAD / Woodbox TMATE-2 to your radio")]
+#[command(
+    name = "tmate2",
+    version,
+    about = "Connects the ELAD / Woodbox TMATE-2 to your radio"
+)]
 struct Cli {
     /// Configuration file (default: the per-user config folder; created with
     /// commented defaults if it does not exist).
@@ -65,7 +76,54 @@ fn load_config(path: &Path) -> Result<Config> {
     Config::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
+/// A program built for the Windows GUI subsystem has no console. Attach to the
+/// terminal it was started from, so `--help` and logs still appear there;
+/// for `--headless` started without a terminal, open a console for the log.
+#[cfg(all(windows, feature = "gui", not(debug_assertions)))]
+fn windows_console() {
+    use std::ptr::null;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AllocConsole, AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
+        STD_OUTPUT_HANDLE,
+    };
+    let headless = std::env::args().any(|a| a == "--headless");
+    // SAFETY: Win32 calls with a valid NUL-terminated name and null optional
+    // pointers; any failure simply leaves the program without a console.
+    unsafe {
+        let have_console = AttachConsole(ATTACH_PARENT_PROCESS) != 0 || (headless && AllocConsole() != 0);
+        if !have_console {
+            return;
+        }
+        // Output that is already redirected (pipe / file) keeps its handle;
+        // otherwise point stdout / stderr at the console.
+        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        for std_handle in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(std_handle);
+            if h.is_null() || h == INVALID_HANDLE_VALUE {
+                let con = CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    null(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                );
+                if con != INVALID_HANDLE_VALUE {
+                    SetStdHandle(std_handle, con);
+                }
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(all(windows, feature = "gui", not(debug_assertions)))]
+    windows_console();
     let cli = Cli::parse();
     if cli.print_default_config {
         print!("{DEFAULT_TOML}");
