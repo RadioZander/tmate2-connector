@@ -1,0 +1,13 @@
+[package]
+name = "tmate2-probe"
+description = "Hardware bring-up tool for the TMATE-2: dump reports, map LCD segments, test outputs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tmate2-hid = { path = "../tmate2-hid" }
+clap.workspace = true
+anyhow.workspace = true

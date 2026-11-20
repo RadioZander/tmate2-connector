@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+
+# Personal configs and raw captures stay local: only scrubbed fixtures get committed
+/config.toml
+/local/
+*.local.toml
+/captures/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Raw output of `tmate2-probe walk` (merged into segmap.default.toml)
+segmap.walked.toml

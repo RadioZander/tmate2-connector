@@ -1,0 +1,5 @@
+# udev rule giving logged-in users access to the ELAD / Woodbox TMATE-2 (USB HID).
+# Install:  sudo cp 50-tmate2.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# Then unplug and replug the TMATE-2.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1721", ATTRS{idProduct}=="0614", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="1721", ATTRS{idProduct}=="0614", MODE="0660", GROUP="plugdev", TAG+="uaccess"

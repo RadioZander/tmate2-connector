@@ -1,0 +1,21 @@
+[package]
+name = "tmate2-hid"
+description = "Cross-platform USB HID driver for the ELAD / Woodbox TMATE-2 controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+# Native Windows HID backend: no C compiler or libusb needed.
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
+
+# Linux uses hidraw (needs libudev at build time); macOS uses IOKit.
+[target.'cfg(not(windows))'.dependencies]
+hidapi = { version = "2.6" }
