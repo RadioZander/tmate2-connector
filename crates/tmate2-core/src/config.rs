@@ -1,5 +1,6 @@
 //! Human-readable TOML configuration.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -17,6 +18,32 @@ pub struct Config {
     pub e1: KnobConfig,
     pub e2: KnobConfig,
     pub buttons: ButtonsConfig,
+    /// Default receive filter per mode name (e.g. "USB"), [low, high] in Hz.
+    #[serde(default = "default_filters")]
+    pub filters: BTreeMap<String, [i32; 2]>,
+}
+
+fn default_filters() -> BTreeMap<String, [i32; 2]> {
+    #[derive(Deserialize)]
+    struct F {
+        filters: BTreeMap<String, [i32; 2]>,
+    }
+    let section = &DEFAULT_TOML[DEFAULT_TOML
+        .find("[filters]")
+        .expect("default config has [filters]")..];
+    let section = section.split("\n[").next().unwrap_or(section);
+    toml::from_str::<F>(section)
+        .expect("default [filters] is valid")
+        .filters
+}
+
+impl Config {
+    /// Default filter for a mode, if configured.
+    pub fn default_filter(&self, mode: &str) -> Option<(i32, i32)> {
+        self.filters
+            .get(&mode.to_ascii_uppercase())
+            .map(|[lo, hi]| (*lo, *hi))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -92,6 +119,18 @@ pub struct TuningConfig {
 #[serde(deny_unknown_fields)]
 pub struct KnobConfig {
     pub functions: Vec<KnobFunction>,
+    /// Function selected when the connector starts (default: the first).
+    #[serde(default)]
+    pub start: Option<KnobFunction>,
+}
+
+impl KnobConfig {
+    /// Index in `functions` of the starting function.
+    pub fn start_index(&self) -> usize {
+        self.start
+            .and_then(|s| self.functions.iter().position(|f| *f == s))
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -173,6 +212,9 @@ pub enum KnobFunction {
     Nr,
     Nb,
     An,
+    /// Filter width, symmetric about the passband centre. The LCD has no
+    /// WIDTH label, so HIGH and LOW are lit together.
+    Width,
     High,
     Low,
     Shift,
@@ -181,7 +223,7 @@ pub enum KnobFunction {
 }
 
 impl KnobFunction {
-    pub const ALL: [KnobFunction; 12] = [
+    pub const ALL: [KnobFunction; 13] = [
         KnobFunction::Vol,
         KnobFunction::Sql,
         KnobFunction::Rfg,
@@ -189,6 +231,7 @@ impl KnobFunction {
         KnobFunction::Nr,
         KnobFunction::Nb,
         KnobFunction::An,
+        KnobFunction::Width,
         KnobFunction::High,
         KnobFunction::Low,
         KnobFunction::Shift,
@@ -205,6 +248,7 @@ impl KnobFunction {
             KnobFunction::Nr => "nr",
             KnobFunction::Nb => "nb",
             KnobFunction::An => "an",
+            KnobFunction::Width => "width",
             KnobFunction::High => "high",
             KnobFunction::Low => "low",
             KnobFunction::Shift => "shift",
@@ -423,6 +467,19 @@ impl Config {
         if self.e1.functions.is_empty() || self.e2.functions.is_empty() {
             return bad("e1.functions and e2.functions must each list at least one function".into());
         }
+        for (mode, [lo, hi]) in &self.filters {
+            if hi - lo < 50 {
+                return bad(format!("filters.{mode}: high must be at least 50 Hz above low"));
+            }
+        }
+        for (name, k) in [("e1", &self.e1), ("e2", &self.e2)] {
+            if let Some(s) = k.start.filter(|s| !k.functions.contains(s)) {
+                return bad(format!(
+                    "{name}.start = \"{}\" is not in {name}.functions",
+                    s.name()
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -464,6 +521,19 @@ mod tests {
             Ok(Action::Raw("trx:0,true;".into()))
         );
         assert_eq!(Action::VfoAToB.to_string(), "vfo_a_to_b");
+    }
+
+    #[test]
+    fn filters_default_when_missing_from_file() {
+        // Remove the whole [filters] block, as in a config written before it existed.
+        let last = "NFM = [-5500, 5500]\n";
+        let start = DEFAULT_TOML.find("\n# Default receive filter").unwrap();
+        let end = DEFAULT_TOML.find(last).unwrap() + last.len();
+        let text = format!("{}{}", &DEFAULT_TOML[..start], &DEFAULT_TOML[end..]);
+        assert!(!text.contains("\n[filters]"));
+        let c = Config::parse(&text).unwrap();
+        assert_eq!(c.default_filter("usb"), Some((100, 2500)));
+        assert_eq!(Config::default().default_filter("CWL"), Some((-850, -350)));
     }
 
     #[test]

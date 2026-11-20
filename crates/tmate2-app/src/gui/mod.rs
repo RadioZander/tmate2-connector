@@ -29,9 +29,10 @@ const E1_CHOICES: [KnobFunction; 7] = [
     KnobFunction::Nb,
     KnobFunction::An,
 ];
-const E2_CHOICES: [KnobFunction; 5] = [
+const E2_CHOICES: [KnobFunction; 6] = [
     KnobFunction::High,
     KnobFunction::Low,
+    KnobFunction::Width,
     KnobFunction::Shift,
     KnobFunction::Rit,
     KnobFunction::Xit,
@@ -197,6 +198,29 @@ fn presets(ui: &mut egui::Ui, id: &str, rgb: &mut [u8; 3]) {
     });
 }
 
+fn start_picker(ui: &mut egui::Ui, id: &str, knob: &mut tmate2_core::config::KnobConfig) {
+    // If the starting function was unticked, start on the first one instead.
+    if knob.start.is_some_and(|s| !knob.functions.contains(&s)) {
+        knob.start = knob.functions.first().copied();
+    }
+    let current = knob.functions[knob.start_index()];
+    ui.horizontal(|ui| {
+        ui.label("Starts on");
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(current.name().to_uppercase())
+            .show_ui(ui, |ui| {
+                for f in knob.functions.clone() {
+                    if ui
+                        .selectable_label(f == current, f.name().to_uppercase())
+                        .clicked()
+                    {
+                        knob.start = Some(f);
+                    }
+                }
+            });
+    });
+}
+
 fn knob_functions(ui: &mut egui::Ui, choices: &[KnobFunction], selected: &mut Vec<KnobFunction>) {
     ui.horizontal_wrapped(|ui| {
         for f in choices {
@@ -314,9 +338,11 @@ impl App {
         ui.add_space(6.0);
         ui.strong("E1 (left knob)");
         knob_functions(ui, &E1_CHOICES, &mut self.draft.e1.functions);
+        start_picker(ui, "e1start", &mut self.draft.e1);
         ui.add_space(6.0);
         ui.strong("E2 (right knob)");
         knob_functions(ui, &E2_CHOICES, &mut self.draft.e2.functions);
+        start_picker(ui, "e2start", &mut self.draft.e2);
         ui.add_space(6.0);
         let t = &mut self.draft.tuning;
         egui::Grid::new("knobsteps").num_columns(2).show(ui, |ui| {

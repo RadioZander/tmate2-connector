@@ -2,7 +2,7 @@
 
 use tmate2_hid::{OutputReport, SegmentMap};
 
-use crate::config::{DisplayConfig, Readout};
+use crate::config::{DisplayConfig, KnobFunction, Readout};
 use crate::engine::View;
 use crate::state::{Mode, RadioState};
 
@@ -129,7 +129,13 @@ pub fn render(
     on("e1");
     on(&format!("e1.{}", view.e1.name()));
     on("e2");
-    on(&format!("e2.{}", view.e2.name()));
+    match view.e2 {
+        KnobFunction::Width => {
+            on("e2.high");
+            on("e2.low");
+        }
+        f => on(&format!("e2.{}", f.name())),
+    }
 
     // S-meter: bar graph, fixed scale, small readout.
     on("bar.line");

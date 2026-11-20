@@ -79,6 +79,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(cfg: Config) -> Engine {
+        let e_idx = [cfg.e1.start_index(), cfg.e2.start_index()];
         let step_idx = cfg
             .tuning
             .steps_hz
@@ -89,7 +90,7 @@ impl Engine {
             cfg,
             step_idx,
             active_vfo: 0,
-            e_idx: [0, 0],
+            e_idx,
             e_accum: [0, 0],
             pressed: HashMap::new(),
             last_turn: [None; 3],
@@ -106,6 +107,15 @@ impl Engine {
     /// Apply new settings while running, keeping the current step where
     /// possible, the active VFO and the knob functions' positions.
     pub fn set_config(&mut self, cfg: Config) {
+        // Stay on the current knob functions if they are still in the lists.
+        let current = [self.function(0), self.function(1)];
+        for (k, list) in [&cfg.e1, &cfg.e2].into_iter().enumerate() {
+            self.e_idx[k] = list
+                .functions
+                .iter()
+                .position(|f| *f == current[k])
+                .unwrap_or_else(|| list.start_index());
+        }
         let step = self.step_hz();
         self.step_idx = cfg
             .tuning
@@ -341,25 +351,30 @@ impl Engine {
             KnobFunction::Nr => Some(Command::Nr { trx: t, on: d > 0 }),
             KnobFunction::Nb => Some(Command::Nb { trx: t, on: d > 0 }),
             KnobFunction::An => Some(Command::Anf { trx: t, on: d > 0 }),
-            KnobFunction::High | KnobFunction::Low | KnobFunction::Shift => x.filter.map(|(lo, hi)| {
-                let (mut lo, mut hi) = (lo, hi);
-                match (f, lsb) {
-                    (KnobFunction::High, false) => hi += fs,
-                    (KnobFunction::High, true) => lo -= fs,
-                    (KnobFunction::Low, false) => lo += fs,
-                    (KnobFunction::Low, true) => hi -= fs,
-                    (_, false) => (lo, hi) = (lo + fs, hi + fs),
-                    (_, true) => (lo, hi) = (lo - fs, hi - fs),
-                }
-                if hi - lo < 50 {
-                    (lo, hi) = x.filter.unwrap();
-                }
-                Command::Filter {
-                    trx: t,
-                    low: lo,
-                    high: hi,
-                }
-            }),
+            KnobFunction::Width | KnobFunction::High | KnobFunction::Low | KnobFunction::Shift => {
+                x.filter.map(|(lo, hi)| {
+                    let (mut lo, mut hi) = (lo, hi);
+                    match (f, lsb) {
+                        // Each edge moves half a step, so the width changes by
+                        // one filter step per click about a fixed centre.
+                        (KnobFunction::Width, _) => (lo, hi) = (lo - fs / 2, hi + fs / 2),
+                        (KnobFunction::High, false) => hi += fs,
+                        (KnobFunction::High, true) => lo -= fs,
+                        (KnobFunction::Low, false) => lo += fs,
+                        (KnobFunction::Low, true) => hi -= fs,
+                        (_, false) => (lo, hi) = (lo + fs, hi + fs),
+                        (_, true) => (lo, hi) = (lo - fs, hi - fs),
+                    }
+                    if hi - lo < 50 {
+                        (lo, hi) = x.filter.unwrap();
+                    }
+                    Command::Filter {
+                        trx: t,
+                        low: lo,
+                        high: hi,
+                    }
+                })
+            }
             KnobFunction::Rit => Some(Command::RitOffset {
                 trx: t,
                 hz: (x.rit_offset + rs).clamp(-9990, 9990),
@@ -499,6 +514,13 @@ impl Engine {
                     KnobFunction::An => vec![Command::Anf { trx: t, on: !x.anf }],
                     KnobFunction::Rit => vec![Command::Rit { trx: t, on: !x.rit }],
                     KnobFunction::Xit => vec![Command::Xit { trx: t, on: !x.xit }],
+                    // Filter functions have nothing to toggle: restore the
+                    // mode's default filter instead.
+                    KnobFunction::Width | KnobFunction::Shift | KnobFunction::High | KnobFunction::Low => x
+                        .mode
+                        .and_then(|m| self.cfg.default_filter(m.name()))
+                        .map(|(low, high)| vec![Command::Filter { trx: t, low, high }])
+                        .unwrap_or_default(),
                     _ => vec![],
                 };
                 for c in cmds {
@@ -555,6 +577,7 @@ pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize, volume: Volum
         KnobFunction::An => ("AnF", on_off(x.anf)),
         KnobFunction::High => ("HI", num(x.filter.map(|(lo, hi)| if lsb { -lo } else { hi }))),
         KnobFunction::Low => ("LO", num(x.filter.map(|(lo, hi)| if lsb { -hi } else { lo }))),
+        KnobFunction::Width => ("FIL", num(x.filter.map(|(lo, hi)| hi - lo))),
         KnobFunction::Shift => ("SH", num(x.filter.map(|(lo, hi)| ((lo + hi) / 2).abs()))),
         KnobFunction::Rit if !x.rit => ("rit", "off".to_string()),
         KnobFunction::Rit => ("rit", num(Some(x.rit_offset))),
@@ -781,6 +804,63 @@ mod tests {
         let mut s = connected();
         let c = e.handle(InputEvent::Pressed(Button::F1), Instant::now(), &mut s);
         assert_eq!(c, vec![Command::Mox { trx: 0, on: true }]);
+    }
+
+    #[test]
+    fn knobs_start_on_configured_function_and_keep_it_on_reload() {
+        let mut cfg = Config::default();
+        assert_eq!(
+            Engine::new(cfg.clone()).view(Instant::now()).e2,
+            KnobFunction::Width
+        );
+        cfg.e1.start = Some(KnobFunction::Sql);
+        let mut e = Engine::new(cfg.clone());
+        assert_eq!(e.view(Instant::now()).e1, KnobFunction::Sql);
+        // Reordering the list keeps the knob on SQL.
+        cfg.e1.functions.reverse();
+        e.set_config(cfg);
+        assert_eq!(e.view(Instant::now()).e1, KnobFunction::Sql);
+    }
+
+    #[test]
+    fn holding_e2_on_a_filter_function_restores_the_default() {
+        let mut e = Engine::new(Config::default());
+        let mut s = connected();
+        s.trx_mut(0).filter = Some((300, 1800));
+        let t0 = Instant::now();
+        e.handle(InputEvent::Pressed(Button::E2Push), t0, &mut s);
+        let c = e.tick(t0 + Duration::from_millis(600), &mut s);
+        assert_eq!(
+            c,
+            vec![Command::Filter {
+                trx: 0,
+                low: 100,
+                high: 2500
+            }]
+        );
+    }
+
+    #[test]
+    fn width_changes_both_edges_about_the_centre() {
+        let mut cfg = Config::default();
+        cfg.e2.functions = vec![KnobFunction::Width];
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        let now = Instant::now();
+        let c = e.handle(turn(Encoder::E2, 2), now, &mut s);
+        assert_eq!(
+            c,
+            vec![Command::Filter {
+                trx: 0,
+                low: 75,
+                high: 2825
+            }]
+        );
+        assert_eq!(e.view(now).flash.as_deref(), Some("FIL  2750"));
+        // Narrowing never goes below 50 Hz.
+        s.trx_mut(0).filter = Some((1000, 1060));
+        e.handle(turn(Encoder::E2, -2), now, &mut s);
+        assert_eq!(s.trx[0].filter, Some((1000, 1060)));
     }
 
     #[test]

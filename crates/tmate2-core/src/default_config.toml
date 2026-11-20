@@ -53,12 +53,32 @@ mode_cycle = ["LSB", "USB", "CWU", "AM", "FM", "DIGU"]
 # The bottom row of the LCD shows what each knob is set to. Push the knob to
 # step through its functions (see e1_push / e2_push below).
 #   E1 can be: vol, sql, rfg, drv, nr, nb, an
-#   E2 can be: high, low, shift, rit, xit
+#   E2 can be: high, low, width, shift, rit, xit
+#   (width has no label of its own, so HIGH and LOW light together)
+# "start" is the function each knob is on when the connector starts.
 [e1]
 functions = ["vol", "sql", "rfg", "drv", "nr", "nb", "an"]
+start = "vol"
 
 [e2]
-functions = ["shift", "high", "low", "rit", "xit"]
+functions = ["high", "low", "width", "shift", "rit", "xit"]
+start = "width"
+
+# Default receive filter per mode, as [low, high] passband edges in Hz from
+# the carrier (lower-sideband modes are negative). Holding E2 while it is on
+# high, low, width or shift puts the current mode's default back.
+[filters]
+LSB = [-2500, -100]
+USB = [100, 2500]
+CWL = [-850, -350]
+CWU = [350, 850]
+DIGL = [-3000, 0]
+DIGU = [0, 3000]
+AM = [-5000, 5000]
+SAM = [-5000, 5000]
+DSB = [-3300, 3300]
+FM = [-8000, 8000]
+NFM = [-5500, 5500]
 
 # What each button and knob push does:
 #   tap  = a short press
@@ -77,7 +97,8 @@ functions = ["shift", "high", "low", "rit", "xit"]
 #   tune (tune carrier on/off)
 #   step_next  step_prev
 #   e1_next  e2_next  e1_toggle  e2_toggle   (toggle = on/off for the
-#                                             knob's current function)
+#     knob's current function; for the filter functions it restores the
+#     mode's default filter from [filters])
 #   raw:<text>   sends <text> to the radio unchanged, e.g. raw:trx:0,true;
 #   none
 [buttons]

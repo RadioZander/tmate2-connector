@@ -137,6 +137,9 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
 
     set(doc, "e1", "functions", functions(&c.e1.functions));
     set(doc, "e2", "functions", functions(&c.e2.functions));
+    for (t, k) in [("e1", &c.e1), ("e2", &c.e2)] {
+        set(doc, t, "start", k.functions[k.start_index()].name());
+    }
 
     let b = &c.buttons;
     set(doc, "buttons", "hold_ms", b.hold_ms as i64);
