@@ -22,6 +22,14 @@ const SCALE: [&str; 12] = [
     "scale.60",
 ];
 
+/// Device contrast value for a percentage (100 = darkest). The LCD gets
+/// darker as the raw value falls; 0 is darkest, segments fade towards 128 and
+/// vanish by 192 (HW1.1 / FW1.5). 0 % maps to a faint but readable 80.
+pub fn contrast_raw(pct: u8) -> u8 {
+    const FAINTEST: u32 = 80;
+    ((100 - pct.min(100) as u32) * FAINTEST / 100) as u8
+}
+
 /// Number of S-meter bars (of 15) for a level in dBm: bars 1-9 are S1-S9
 /// (6 dB each, S9 = -73 dBm), bars 10-15 are +10 .. +60 dB over S9.
 pub fn bars_for_dbm(dbm: f32) -> usize {
@@ -32,12 +40,12 @@ pub fn bars_for_dbm(dbm: f32) -> usize {
     }
 }
 
-/// "S7", "S9", "+20" for a level in dBm.
+/// Small-readout text for a level in dBm: the S unit ("7", "9"), or the dB
+/// over S9 ("+20"). No "S" prefix: on seven segments it reads as a 5.
 pub fn s_units_text(dbm: f32) -> String {
-    if dbm < -73.0 {
-        format!("S{}", bars_for_dbm(dbm))
-    } else {
-        format!("+{}", (((dbm + 73.0) / 10.0).floor() as i32 * 10).min(60))
+    match bars_for_dbm(dbm) {
+        n @ 0..=9 => n.to_string(),
+        n => format!("+{}", (n - 9) * 10),
     }
 }
 
@@ -67,7 +75,7 @@ pub fn render(
     out: &mut OutputReport,
 ) {
     out.clear_segments();
-    out.set_contrast(cfg.contrast);
+    out.set_contrast(contrast_raw(cfg.contrast));
 
     if !state.connected {
         let [r, g, b] = cfg.backlight_disconnected;
@@ -162,13 +170,23 @@ mod tests {
     }
 
     #[test]
+    fn contrast_percent_maps_onto_usable_range() {
+        assert_eq!(contrast_raw(100), 0);
+        assert_eq!(contrast_raw(0), 80);
+        assert_eq!(contrast_raw(50), 40);
+        assert_eq!(contrast_raw(200), 0);
+    }
+
+    #[test]
     fn s_meter_scale() {
         assert_eq!(bars_for_dbm(-127.0), 0);
         assert_eq!(bars_for_dbm(-121.0), 1);
         assert_eq!(bars_for_dbm(-73.0), 9);
         assert_eq!(bars_for_dbm(-53.0), 11);
         assert_eq!(bars_for_dbm(0.0), 15);
-        assert_eq!(s_units_text(-80.0), "S7");
+        assert_eq!(s_units_text(-80.0), "7");
+        assert_eq!(s_units_text(-73.0), "9");
+        assert_eq!(s_units_text(-63.0), "+10");
         assert_eq!(s_units_text(-50.0), "+20");
     }
 

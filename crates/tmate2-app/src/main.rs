@@ -1,24 +1,30 @@
-//! `tmate2`: the TMATE-2 connector (headless for now).
+//! `tmate2`: the TMATE-2 connector.
 
+mod device;
+#[cfg(feature = "gui")]
+mod gui;
+mod shared;
+
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tokio::sync::watch;
+use tracing::{error, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
 
-use tmate2_backends::{tci_client, SharedState};
+use tmate2_backends::tci_client;
 use tmate2_core::config::{Config, DEFAULT_TOML};
-use tmate2_core::render::render;
-use tmate2_core::{Command, Engine, RadioState};
-use tmate2_hid::hidapi::HidApi;
-use tmate2_hid::{InputTracker, SegmentMap, Tmate2};
+use tmate2_core::RadioState;
+use tmate2_hid::{OutputReport, SegmentMap};
 
-const FRAME: Duration = Duration::from_millis(50);
-const READ_TIMEOUT_MS: i32 = 10;
+use crate::shared::{LogBuffer, Shared};
 
 #[derive(Parser)]
 #[command(version, about = "Connects the ELAD / Woodbox TMATE-2 to your radio")]
@@ -30,6 +36,9 @@ struct Cli {
     /// LCD segment map overriding entries of the built-in one.
     #[arg(long)]
     segmap: Option<PathBuf>,
+    /// Run without a window (for servers and the Raspberry Pi).
+    #[arg(long)]
+    headless: bool,
     /// Print the default configuration and exit.
     #[arg(long)]
     print_default_config: bool,
@@ -62,11 +71,21 @@ fn main() -> Result<()> {
         print!("{DEFAULT_TOML}");
         return Ok(());
     }
+
+    let log = Arc::new(Mutex::new(VecDeque::new()));
     let level = ["info", "debug", "trace"][cli.verbose.min(2) as usize];
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level)),
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level))
+    };
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter()))
+        .with(
+            LogBuffer {
+                lines: log.clone(),
+                start: Instant::now(),
+            }
+            .with_filter(tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
@@ -80,110 +99,57 @@ fn main() -> Result<()> {
         map.merge(&SegmentMap::from_toml(&text)?);
     }
 
-    let state: SharedState = Arc::new(Mutex::new(RadioState::default()));
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let stop = Arc::new(AtomicBool::new(false));
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (radio_cfg_tx, radio_cfg_rx) = watch::channel(cfg.radio.clone());
+    let (config_tx, config_rx) = mpsc::channel();
+    let shared = Arc::new(Shared {
+        radio: Arc::new(Mutex::new(RadioState::default())),
+        lcd: Mutex::new(OutputReport::default()),
+        device_connected: AtomicBool::new(false),
+        last_input: Mutex::new(None),
+        log,
+        stop: AtomicBool::new(false),
+        all_segments_until: Mutex::new(None),
+        config_tx: Mutex::new(config_tx),
+    });
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
-    rt.spawn(tci_client::run(cfg.radio.clone(), state.clone(), cmd_rx));
+    rt.spawn(tci_client::run(radio_cfg_rx, shared.radio.clone(), cmd_rx));
     {
-        let stop = stop.clone();
+        let shared = shared.clone();
         rt.spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 info!("stopping");
-                stop.store(true, Ordering::SeqCst);
+                shared.stop.store(true, Ordering::SeqCst);
             }
         });
     }
 
-    device_loop(cfg, &map, &state, &cmd_tx, &stop)?;
-    rt.shutdown_timeout(Duration::from_millis(500));
-    Ok(())
-}
-
-/// Owns the TMATE-2: reads input, runs the engine, draws the display.
-/// Reconnects if the device is unplugged.
-fn device_loop(
-    cfg: Config,
-    map: &SegmentMap,
-    state: &SharedState,
-    cmd_tx: &mpsc::UnboundedSender<Command>,
-    stop: &AtomicBool,
-) -> Result<()> {
-    let mut api = HidApi::new().context("initialising HID")?;
-    let mut engine = Engine::new(cfg.clone());
-    let mut warned = false;
-
-    while !stop.load(Ordering::SeqCst) {
-        let mut dev = match Tmate2::open(&api) {
-            Ok(d) => d,
-            Err(e) => {
-                if !warned {
-                    warn!("TMATE-2 not available ({e}); waiting for it");
-                    warned = true;
+    let device = {
+        let shared = shared.clone();
+        let cfg = cfg.clone();
+        std::thread::Builder::new()
+            .name("tmate2-device".into())
+            .spawn(move || {
+                if let Err(e) = device::run(cfg, map, &shared, cmd_tx, config_rx) {
+                    error!("device loop failed: {e:#}");
                 }
-                std::thread::sleep(Duration::from_secs(1));
-                let _ = api.refresh_devices();
-                continue;
-            }
-        };
-        warned = false;
-        info!("TMATE-2 connected");
+            })?
+    };
 
-        let mut tracker = InputTracker::new();
-        let mut events = Vec::new();
-        let mut last_draw = Instant::now() - FRAME;
-        let send = |cmds: Vec<Command>| {
-            for c in cmds {
-                let _ = cmd_tx.send(c);
-            }
-        };
-
-        let lost = loop {
-            if stop.load(Ordering::SeqCst) {
-                send(engine.release_all(Instant::now(), &mut state.lock().unwrap()));
-                let o = dev.output_mut();
-                o.clear_segments();
-                o.set_rgb(0, 0, 0);
-                o.set_usb_led(false);
-                o.set_lock_led(false);
-                let _ = dev.flush();
-                return Ok(());
-            }
-            match dev.read(READ_TIMEOUT_MS) {
-                Ok(Some(report)) => {
-                    events.clear();
-                    tracker.feed(report, &mut events);
-                    let now = Instant::now();
-                    for ev in events.drain(..) {
-                        let cmds = engine.handle(ev, now, &mut state.lock().unwrap());
-                        send(cmds);
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => break e,
-            }
-            let now = Instant::now();
-            send(engine.tick(now, &mut state.lock().unwrap()));
-            if now.duration_since(last_draw) >= FRAME {
-                let snapshot = state.lock().unwrap().clone();
-                render(&snapshot, &engine.view(now), &cfg.display, map, dev.output_mut());
-                if let Err(e) = dev.flush() {
-                    break e;
-                }
-                last_draw = now;
-            }
-        };
-        warn!("TMATE-2 disconnected: {lost}");
-        // Never leave the radio transmitting because a PTT button was held
-        // when the device went away.
-        for c in engine.release_all(Instant::now(), &mut state.lock().unwrap()) {
-            let _ = cmd_tx.send(c);
-        }
-        let _ = api.refresh_devices();
+    #[cfg(feature = "gui")]
+    if !cli.headless {
+        gui::run(shared.clone(), cfg, path, radio_cfg_tx)?;
+        shared.stop.store(true, Ordering::SeqCst);
     }
+    // Keep the settings channel open for the lifetime of the program.
+    #[cfg(not(feature = "gui"))]
+    let _radio_cfg_tx = (cli.headless, radio_cfg_tx);
+
+    let _ = device.join();
+    rt.shutdown_timeout(Duration::from_millis(500));
     Ok(())
 }

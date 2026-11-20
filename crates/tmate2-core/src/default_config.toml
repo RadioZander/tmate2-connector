@@ -18,8 +18,8 @@ tcix = "auto"
 trx = 0
 
 [display]
-# LCD contrast: 0 is darkest; 128 is faint; 192 and above blanks the LCD.
-contrast = 0
+# LCD contrast in percent: 100 is darkest, 0 is faintest.
+contrast = 100
 # Backlight colours as [red, green, blue], each 0-255.
 backlight = [255, 255, 255]
 backlight_tx = [255, 0, 0]
@@ -28,6 +28,10 @@ backlight_disconnected = [255, 120, 0]
 readout = "dbm"
 # How long (ms) a value you change with E1 / E2 is shown on the main display.
 flash_ms = 1500
+# How E1 VOL shows and steps the master volume:
+#   "percent" - 0 to 100, matching Thetis's Master AF (1 per click)
+#   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software
+volume_scale = "percent"
 
 [tuning]
 # Tuning steps for the main knob; the step digit is underlined on the LCD.

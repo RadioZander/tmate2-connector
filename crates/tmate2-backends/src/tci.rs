@@ -158,7 +158,7 @@ pub fn encode(cmd: &Command) -> Option<String> {
         } => return None,
         Command::Mode { trx, mode } => format!("modulation:{trx},{};", mode.name()),
         Command::Filter { trx, low, high } => format!("rx_filter_band:{trx},{low},{high};"),
-        Command::Volume { db } => format!("volume:{};", db.round() as i32),
+        Command::Volume { db } => format!("volume:{db:.2};"),
         Command::Mute(on) => format!("mute:{};", tf(*on)),
         Command::Drive { trx, pct } => format!("drive:{trx},{pct};"),
         Command::Squelch { trx, enable } => format!("sql_enable:{trx},{};", tf(*enable)),
@@ -280,7 +280,7 @@ mod tests {
             .unwrap(),
             "modulation:0,USB;"
         );
-        assert_eq!(encode(&Command::Volume { db: -12.4 }).unwrap(), "volume:-12;");
+        assert_eq!(encode(&Command::Volume { db: -58.17 }).unwrap(), "volume:-58.17;");
         assert_eq!(encode(&Command::Raw("trx:0,true".into())).unwrap(), "trx:0,true;");
     }
 

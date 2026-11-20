@@ -8,7 +8,7 @@ use serde::Deserialize;
 /// The commented default configuration; also the single source of defaults.
 pub const DEFAULT_TOML: &str = include_str!("default_config.toml");
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub radio: RadioConfig,
@@ -19,7 +19,7 @@ pub struct Config {
     pub buttons: ButtonsConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RadioConfig {
     pub backend: Backend,
@@ -43,15 +43,29 @@ pub enum TcixMode {
     On,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisplayConfig {
+    /// Percent, 100 = darkest.
     pub contrast: u8,
     pub backlight: [u8; 3],
     pub backlight_tx: [u8; 3],
     pub backlight_disconnected: [u8; 3],
     pub readout: Readout,
     pub flash_ms: u64,
+    #[serde(default)]
+    pub volume_scale: VolumeScale,
+}
+
+/// How E1 VOL shows and steps the master volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeScale {
+    /// 0-100, like Thetis's Master AF (1 per click).
+    #[default]
+    Percent,
+    /// TCI's own -60..0 dB (1 dB per click).
+    Db,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -62,7 +76,7 @@ pub enum Readout {
     Off,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TuningConfig {
     pub steps_hz: Vec<u64>,
@@ -74,13 +88,13 @@ pub struct TuningConfig {
     pub mode_cycle: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KnobConfig {
     pub functions: Vec<KnobFunction>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ButtonsConfig {
     pub hold_ms: u64,
@@ -139,7 +153,7 @@ impl ButtonsConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ButtonAction {
     #[serde(default)]
@@ -312,6 +326,11 @@ impl TryFrom<String> for Action {
 }
 
 impl Action {
+    /// Every action that has a plain name, for pickers in the GUI.
+    pub fn simple() -> impl Iterator<Item = &'static Action> {
+        SIMPLE_ACTIONS.iter().map(|(_, a)| a)
+    }
+
     /// Stepping / cycling actions that auto-repeat while a button is held.
     /// On/off toggles never repeat.
     pub fn repeats(&self) -> bool {

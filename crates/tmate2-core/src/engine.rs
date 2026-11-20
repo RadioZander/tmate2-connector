@@ -7,7 +7,7 @@ use tmate2_hid::{Button, Encoder, InputEvent};
 
 use crate::bands::{band_of, step_band, BANDS};
 use crate::command::Command;
-use crate::config::{Action, Config, KnobFunction};
+use crate::config::{Action, Config, KnobFunction, VolumeScale};
 use crate::state::{Mode, RadioState};
 
 /// How long VFO echoes from the radio are ignored after local tuning.
@@ -101,6 +101,20 @@ impl Engine {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// Apply new settings while running, keeping the current step where
+    /// possible, the active VFO and the knob functions' positions.
+    pub fn set_config(&mut self, cfg: Config) {
+        let step = self.step_hz();
+        self.step_idx = cfg
+            .tuning
+            .steps_hz
+            .iter()
+            .position(|s| *s == step)
+            .or_else(|| cfg.tuning.steps_hz.iter().position(|s| *s == cfg.tuning.step_hz))
+            .unwrap_or(0);
+        self.cfg = cfg;
     }
 
     fn trx(&self) -> usize {
@@ -305,7 +319,11 @@ impl Engine {
         let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
         let cmd = match f {
             KnobFunction::Vol => {
-                let db = (state.volume_db.unwrap_or(-20.0).round() + d as f32).clamp(-60.0, 0.0);
+                let cur = state.volume_db.unwrap_or(-30.0);
+                let db = match self.cfg.display.volume_scale {
+                    VolumeScale::Percent => volume_db((volume_pct(cur) + d).clamp(0, 100)),
+                    VolumeScale::Db => (cur.round() + d as f32).clamp(-60.0, 0.0),
+                };
                 Some(Command::Volume { db })
             }
             KnobFunction::Sql => Some(Command::SquelchLevel {
@@ -358,7 +376,8 @@ impl Engine {
     }
 
     fn flash_value(&mut self, f: KnobFunction, now: Instant, state: &RadioState) {
-        self.flash = Some((value_text(f, state, self.trx()), now));
+        let text = value_text(f, state, self.trx(), self.cfg.display.volume_scale);
+        self.flash = Some((text, now));
     }
 
     fn action(&mut self, a: &Action, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
@@ -499,15 +518,34 @@ impl Engine {
     }
 }
 
+/// Master volume as the 0-100 Thetis shows: a straight line from -60 dB (0)
+/// to 0 dB (100).
+pub fn volume_pct(db: f32) -> i32 {
+    ((db.clamp(-60.0, 0.0) + 60.0) / 60.0 * 100.0).round() as i32
+}
+
+/// Inverse of [`volume_pct`]. Thetis converts dB back to its slider by
+/// truncating, so a value exactly on a step (e.g. -58.2 dB for 3) can come out
+/// one low through floating-point error. Aim 0.03 dB above the step instead.
+pub fn volume_db(pct: i32) -> f32 {
+    (pct.clamp(0, 100) as f32 * 0.6 - 60.0 + 0.03).min(0.0)
+}
+
 /// Text for the main display when a knob value changes, e.g. "VOL   -12".
-pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize) -> String {
+pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize, volume: VolumeScale) -> String {
     let x = state.trx(trx).cloned().unwrap_or_default();
     let on_off = |b: bool| if b { "on" } else { "off" }.to_string();
     let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
     let num = |v: Option<i32>| v.map_or("--".to_string(), |v| v.to_string());
     let (label, value) = match f {
         KnobFunction::Vol if state.mute => ("VOL", "off".to_string()),
-        KnobFunction::Vol => ("VOL", num(state.volume_db.map(|v| v.round() as i32))),
+        KnobFunction::Vol => (
+            "VOL",
+            num(state.volume_db.map(|db| match volume {
+                VolumeScale::Percent => volume_pct(db),
+                VolumeScale::Db => db.round() as i32,
+            })),
+        ),
         KnobFunction::Sql if !x.sql_enable => ("SQL", "off".to_string()),
         KnobFunction::Sql => ("SQL", num(x.sql_level)),
         KnobFunction::Rfg => ("AGC", num(x.agc_gain)),
@@ -570,6 +608,18 @@ mod tests {
     }
 
     #[test]
+    fn volume_in_db_mode_steps_one_db() {
+        let mut cfg = Config::default();
+        cfg.display.volume_scale = VolumeScale::Db;
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        let now = Instant::now();
+        e.handle(turn(Encoder::E1, 2), now, &mut s);
+        assert_eq!(s.volume_db, Some(-19.0));
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL   -19"));
+    }
+
+    #[test]
     fn fast_spinning_accelerates() {
         let mut e = Engine::new(Config::default());
         let mut s = connected();
@@ -588,9 +638,17 @@ mod tests {
         assert!(e.handle(turn(Encoder::E1, 1), now, &mut s).is_empty());
         assert_eq!(
             e.handle(turn(Encoder::E1, 1), now, &mut s),
-            vec![Command::Volume { db: -19.0 }]
+            vec![Command::Volume { db: volume_db(68) }]
         );
-        assert_eq!(e.view(now).flash.as_deref(), Some("VOL   -19"));
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL    68"));
+        // Thetis's own reading: -53.4 dB shows as 11.
+        assert_eq!(volume_pct(-53.4), 11);
+        assert_eq!(volume_pct(volume_db(37)), 37);
+        // Thetis truncates (dB + 60) / 0.6 of the two-decimal value it receives.
+        for pct in 0..=100 {
+            let sent: f64 = format!("{:.2}", volume_db(pct)).parse().unwrap();
+            assert_eq!(((sent + 60.0) / 0.6).floor() as i32, pct, "step {pct}");
+        }
     }
 
     #[test]

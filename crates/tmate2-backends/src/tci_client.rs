@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::timeout_at;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
@@ -20,15 +20,21 @@ const TCIX_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Run forever: connect, serve, reconnect. Commands arriving while
 /// disconnected are dropped (they would be stale by the time we reconnect).
-pub async fn run(cfg: RadioConfig, state: SharedState, mut cmds: mpsc::UnboundedReceiver<Command>) {
-    let url = format!("ws://{}:{}/", cfg.host, cfg.port);
+/// A change of settings on `cfg_rx` reconnects with the new settings.
+pub async fn run(
+    mut cfg_rx: watch::Receiver<RadioConfig>,
+    state: SharedState,
+    mut cmds: mpsc::UnboundedReceiver<Command>,
+) {
     loop {
+        let cfg = cfg_rx.borrow_and_update().clone();
+        let url = format!("ws://{}:{}/", cfg.host, cfg.port);
         info!("connecting to TCI server {url}");
         match tokio_tungstenite::connect_async(url.as_str()).await {
             Ok((ws, _)) => {
                 info!("connected to {url}");
-                if let Err(e) = serve(ws, &cfg, &state, &mut cmds).await {
-                    warn!("TCI connection lost: {e}");
+                if let Err(e) = serve(ws, &cfg, &state, &mut cmds, &mut cfg_rx).await {
+                    warn!("TCI connection closed: {e}");
                 }
             }
             Err(e) => debug!("TCI connect failed: {e}"),
@@ -51,11 +57,13 @@ async fn serve(
     cfg: &RadioConfig,
     state: &SharedState,
     cmds: &mut mpsc::UnboundedReceiver<Command>,
+    cfg_rx: &mut watch::Receiver<RadioConfig>,
 ) -> Result<(), String> {
     let (mut tx, mut rx) = ws.split();
     let mut ready = false;
     let mut tcix = TcixNegotiation::default();
     let mut tcix_deadline: Option<tokio::time::Instant> = None;
+    let mut cfg_alive = true;
 
     loop {
         let tcix_wait = async {
@@ -117,6 +125,13 @@ async fn serve(
                 }
                 for line in coalesce(first, cmds) {
                     send(&mut tx, line).await?;
+                }
+            }
+            changed = cfg_rx.changed(), if cfg_alive => {
+                match changed {
+                    Ok(()) => return Err("radio settings changed; reconnecting".into()),
+                    // Nobody can change settings any more: keep running.
+                    Err(_) => cfg_alive = false,
                 }
             }
             _ = tcix_wait => {
