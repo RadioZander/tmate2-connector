@@ -22,6 +22,107 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const LOGIN_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TCIX_TIMEOUT: Duration = Duration::from_secs(2);
 const IDLE_POLL: Duration = Duration::from_millis(250);
+/// A dial or knob value goes out no more often than this (25 a second)…
+const PACE: Duration = Duration::from_millis(40);
+/// …and not before the server has echoed the last one, or this long has
+/// passed without an echo. A radio a network away (a FlexRadio through a
+/// hub) takes far longer over a tuning step than the dial takes to make
+/// one: sent a line for every step, it was still tuning long after the
+/// dial had stopped.
+const ECHO_WAIT: Duration = Duration::from_millis(300);
+
+/// Paces the values a dial or knob sets (`vfo`, AF gain, filter width…):
+/// one in flight for each, the newest waiting behind it, the rest dropped.
+#[derive(Default)]
+struct Pacer {
+    slots: Vec<Slot>,
+}
+
+struct Slot {
+    key: (&'static str, usize),
+    sent: Instant,
+    /// The server hasn't echoed what was sent at `sent`.
+    awaiting: bool,
+    /// The newest value not yet sent.
+    pending: Option<Command>,
+}
+
+impl Slot {
+    /// When the next value may go.
+    fn free_at(&self) -> Instant {
+        self.sent + if self.awaiting { ECHO_WAIT } else { PACE }
+    }
+}
+
+impl Pacer {
+    /// What a command is paced by: its wire name, and for the dial the VFO.
+    /// `None` for commands that go at once (keys, modes, keying).
+    fn key(cmd: &Command) -> Option<(&'static str, usize)> {
+        match cmd {
+            Command::Vfo { vfo, .. } => Some(("vfo", *vfo)),
+            c if c.knob_value() => c.wire_name().map(|n| (n, 0)),
+            _ => None,
+        }
+    }
+
+    /// Offer a paced command: returned if it may go now, else kept as the
+    /// newest for its slot (replacing any older one waiting there).
+    fn offer(&mut self, cmd: Command, now: Instant) -> Option<Command> {
+        let Some(key) = Pacer::key(&cmd) else {
+            return Some(cmd);
+        };
+        match self.slots.iter_mut().find(|s| s.key == key) {
+            Some(slot) if now < slot.free_at() => {
+                slot.pending = Some(cmd);
+                None
+            }
+            Some(slot) => {
+                (slot.sent, slot.awaiting, slot.pending) = (now, true, None);
+                Some(cmd)
+            }
+            None => {
+                self.slots.push(Slot {
+                    key,
+                    sent: now,
+                    awaiting: true,
+                    pending: None,
+                });
+                Some(cmd)
+            }
+        }
+    }
+
+    /// The server reported this command: whatever was in flight has landed.
+    fn echoed(&mut self, m: &tci::Msg) {
+        let vfo = m.args.get(1).and_then(|a| a.parse::<usize>().ok());
+        for slot in &mut self.slots {
+            if slot.key.0 == m.name && (m.name != "vfo" || vfo == Some(slot.key.1)) {
+                slot.awaiting = false;
+            }
+        }
+    }
+
+    /// The waiting values that may go now.
+    fn due(&mut self, now: Instant) -> Vec<Command> {
+        let mut out = Vec::new();
+        for slot in &mut self.slots {
+            if slot.pending.is_some() && now >= slot.free_at() {
+                out.extend(slot.pending.take());
+                (slot.sent, slot.awaiting) = (now, true);
+            }
+        }
+        out
+    }
+
+    /// When the next waiting value may go, if any is waiting.
+    fn next_due(&self) -> Option<Instant> {
+        self.slots
+            .iter()
+            .filter(|s| s.pending.is_some())
+            .map(Slot::free_at)
+            .min()
+    }
+}
 
 /// Why a connection ended, which decides when to try again.
 #[derive(Debug, PartialEq)]
@@ -144,6 +245,7 @@ async fn serve(
     let mut tcix_deadline: Option<tokio::time::Instant> = None;
     let mut cfg_alive = true;
     let mut user: Option<String> = None;
+    let mut pacer = Pacer::default();
 
     macro_rules! send_or_end {
         ($line:expr) => {
@@ -157,6 +259,12 @@ async fn serve(
         let tcix_wait = async {
             match tcix_deadline {
                 Some(d) => tokio::time::sleep_until(d).await,
+                None => std::future::pending().await,
+            }
+        };
+        let pace_wait = async {
+            match pacer.next_due() {
+                Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
                 None => std::future::pending().await,
             }
         };
@@ -179,6 +287,7 @@ async fn serve(
                 {
                     let mut s = state.lock().unwrap();
                     for m in tci::split(&text) {
+                        pacer.echoed(&m);
                         if tcix.feed(&m) {
                             if tcix.done {
                                 if s.tcix.is_none() {
@@ -260,7 +369,28 @@ async fn serve(
                 if !ready {
                     continue;
                 }
-                let lines = coalesce(first, cmds, &state.lock().unwrap());
+                let now = Instant::now();
+                let lines: Vec<String> = {
+                    let s = state.lock().unwrap();
+                    newest(first, cmds, &s)
+                        .into_iter()
+                        .filter_map(|c| pacer.offer(c, now))
+                        .filter_map(|c| tci::encode_for(&c, &s))
+                        .collect()
+                };
+                for line in lines {
+                    send_or_end!(line);
+                }
+            }
+            _ = pace_wait => {
+                let lines: Vec<String> = {
+                    let s = state.lock().unwrap();
+                    pacer
+                        .due(Instant::now())
+                        .iter()
+                        .filter_map(|c| tci::encode_for(c, &s))
+                        .collect()
+                };
                 for line in lines {
                     send_or_end!(line);
                 }
@@ -293,12 +423,12 @@ async fn send(tx: &mut futures_util::stream::SplitSink<Ws, Message>, line: Strin
 /// frequency per (trx, vfo) and the newest of each knob value (AF gain,
 /// filter width, …) so fast turning never builds a backlog. With
 /// TCI-X, anything the server's manifest doesn't take is dropped here too.
-fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: &RadioState) -> Vec<String> {
+fn newest(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: &RadioState) -> Vec<Command> {
     let mut batch = vec![first];
     while let Ok(c) = cmds.try_recv() {
         batch.push(c);
     }
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<Command> = Vec::new();
     for (i, c) in batch.iter().enumerate() {
         if let Command::Vfo { trx, vfo, .. } = c {
             let superseded = batch[i + 1..]
@@ -321,9 +451,18 @@ fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: 
             debug!("not sent (not in the TCI-X manifest): {c:?}");
             continue;
         }
-        out.extend(tci::encode_for(c, state));
+        out.push(c.clone());
     }
     out
+}
+
+/// [`newest`], as the lines to send.
+#[cfg(test)]
+fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: &RadioState) -> Vec<String> {
+    newest(first, cmds, state)
+        .iter()
+        .filter_map(|c| tci::encode_for(c, state))
+        .collect()
 }
 
 #[cfg(test)]
@@ -505,6 +644,46 @@ mod tests {
         .await;
         assert_eq!(hear(&mut ws2).await, format!("login:g0kad,{PROOF};"));
         let _ = ws.close(None).await;
+    }
+
+    #[test]
+    fn a_dial_is_paced_by_the_servers_echoes() {
+        let vfo = |hz| Command::Vfo { trx: 0, vfo: 0, hz };
+        let echo = |line: &str| tci::parse(line).unwrap();
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let mut p = Pacer::default();
+        // The first step goes at once; the rest of a fast spin waits, and
+        // only the newest is kept.
+        assert_eq!(p.offer(vfo(10), t0), Some(vfo(10)));
+        assert_eq!(p.offer(vfo(20), t0 + ms(5)), None);
+        assert_eq!(p.offer(vfo(30), t0 + ms(10)), None);
+        assert!(p.due(t0 + ms(100)).is_empty(), "not before the echo");
+        assert_eq!(p.next_due(), Some(t0 + ECHO_WAIT));
+        // The echo of the first lets the newest go, once the pace allows.
+        p.echoed(&echo("vfo:0,1,7000000;"));
+        assert!(p.due(t0 + ms(100)).is_empty(), "the other VFO's echo");
+        p.echoed(&echo("vfo:0,0,10;"));
+        assert_eq!(p.due(t0 + ms(100)), vec![vfo(30)]);
+        assert_eq!(p.next_due(), None);
+        // A server that never echoes: one value every ECHO_WAIT.
+        assert_eq!(p.offer(vfo(40), t0 + ms(120)), None);
+        assert!(p.due(t0 + ms(300)).is_empty());
+        assert_eq!(p.due(t0 + ms(100) + ECHO_WAIT), vec![vfo(40)]);
+        // Echoed at once, the next still waits out the pace.
+        p.echoed(&echo("vfo:0,0,40;"));
+        let t1 = t0 + ms(100) + ECHO_WAIT;
+        assert_eq!(p.offer(vfo(50), t1 + ms(10)), None);
+        assert_eq!(p.due(t1 + PACE), vec![vfo(50)]);
+        // A knob has a slot of its own; keys and keying aren't paced.
+        let af = |pct| Command::AfGain { trx: 0, pct };
+        assert_eq!(p.offer(af(1), t1), Some(af(1)));
+        assert_eq!(p.offer(af(2), t1), None);
+        p.echoed(&echo("af_gain:0,1;"));
+        assert_eq!(p.due(t1 + PACE), vec![af(2)]);
+        let key = Command::Mox { trx: 0, on: true };
+        assert_eq!(p.offer(key.clone(), t1), Some(key.clone()));
+        assert_eq!(p.offer(key.clone(), t1), Some(key));
     }
 
     #[test]
