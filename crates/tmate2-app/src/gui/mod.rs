@@ -112,7 +112,10 @@ fn dot(ui: &mut egui::Ui, ok: bool) {
     } else {
         Color32::from_rgb(220, 70, 60)
     };
-    ui.label(RichText::new("●").color(c));
+    // Painted rather than a "●" character: egui's bundled fonts lack it.
+    let h = ui.text_style_height(&egui::TextStyle::Body);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(h, h), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), h * 0.35, c);
 }
 
 fn button_label(b: Button) -> &'static str {
@@ -319,7 +322,7 @@ impl App {
                     let label = button_label(b);
                     if pressed == Some(b) {
                         ui.label(
-                            RichText::new(format!("▶ {label}"))
+                            RichText::new(format!("> {label}"))
                                 .strong()
                                 .color(Color32::from_rgb(255, 190, 40)),
                         );
