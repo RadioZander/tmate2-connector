@@ -110,6 +110,8 @@ pub struct Trx {
     pub filter_preset: Option<String>,
     /// TCI-X `notch`: the manual notch's audio frequency in Hz.
     pub notch_hz: Option<i32>,
+    /// TCI-X `vfo_select`: the VFO the radio has active (0 = A, 1 = B).
+    pub vfo_selected: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -131,6 +133,25 @@ pub struct RadioState {
     pub vfo_limits: Option<(u64, u64)>,
     /// TCI-X `dial_lock`: the radio's own dial lock (one for the radio).
     pub dial_lock: bool,
+    /// TCI-X `receive_only`: this connection may never transmit.
+    pub receive_only: bool,
+    /// The account we logged in as and the role the server gave it
+    /// (TCI-X §4.3), e.g. `operate`.
+    pub login_user: Option<String>,
+    pub role: Option<String>,
+    /// Who holds control of the radio (TCI-X §4.4); `None` when nobody
+    /// does, or the server doesn't apply control.
+    pub control: Option<String>,
+    /// Shown instead of "no radio" while disconnected, when we know why
+    /// (e.g. "login", "idle").
+    pub notice: Option<String>,
+    /// The server closed us for being idle (TCI-X §4.4): don't reconnect
+    /// until the user touches the controller.
+    pub idle_closed: bool,
+    /// A short message to flash on the display (a refusal, a control
+    /// request). `alert_seq` counts them, so each is shown once.
+    pub alert: Option<String>,
+    pub alert_seq: u64,
 }
 
 impl RadioState {
@@ -154,6 +175,17 @@ impl RadioState {
             return;
         }
         t.vfo[vfo] = hz;
+    }
+
+    /// Flash a short message on the display.
+    pub fn push_alert(&mut self, text: impl Into<String>) {
+        self.alert = Some(text.into());
+        self.alert_seq = self.alert_seq.wrapping_add(1);
+    }
+
+    /// We hold control of the radio (TCI-X §4.4).
+    pub fn in_control(&self) -> bool {
+        self.control.is_some() && self.control == self.login_user
     }
 
     /// The server listed `cap` in its TCI-X manifest.

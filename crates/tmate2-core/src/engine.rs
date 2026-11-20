@@ -75,6 +75,8 @@ pub struct Engine {
     band_mem: Vec<Option<u64>>,
     recent: VecDeque<(Instant, i32)>,
     flash: Option<(String, Instant)>,
+    /// The last `RadioState::alert_seq` shown.
+    alert_seen: u64,
 }
 
 impl Engine {
@@ -97,6 +99,7 @@ impl Engine {
             band_mem: vec![None; BANDS.len()],
             recent: VecDeque::new(),
             flash: None,
+            alert_seen: 0,
         }
     }
 
@@ -179,6 +182,9 @@ impl Engine {
     /// Handle one input event. Commands are also applied to `state` at once.
     pub fn handle(&mut self, ev: InputEvent, now: Instant, state: &mut RadioState) -> Vec<Command> {
         let mut out = Vec::new();
+        // Touching the controller is the user coming back after the server
+        // closed us for being idle (TCI-X §4.4): the client may reconnect.
+        state.idle_closed = false;
         match ev {
             InputEvent::Turned { encoder, delta } => {
                 self.last_turn[enc_index(encoder)] = Some(now);
@@ -243,6 +249,19 @@ impl Engine {
         for k in 0..2 {
             if !available(self.function(k), state) {
                 self.next_function(k, state);
+            }
+        }
+        // Show each new alert (a refusal, a control request) once.
+        if state.alert_seq != self.alert_seen {
+            self.alert_seen = state.alert_seq;
+            if let Some(text) = &state.alert {
+                self.flash = Some((text.clone(), now));
+            }
+        }
+        // Follow the radio's own active VFO where it reports one.
+        if state.tcix_offers("vfo_select") {
+            if let Some(ch) = state.trx(self.trx()).and_then(|x| x.vfo_selected) {
+                self.active_vfo = ch.min(1);
             }
         }
         let hold = Duration::from_millis(self.cfg.buttons.hold_ms);
@@ -519,10 +538,19 @@ impl Engine {
                 trx: t,
                 mode: Mode::from_name(name),
             }],
+            Action::VfoToggle if state.tcix_offers("vfo_select") => {
+                self.active_vfo ^= 1;
+                vec![Command::VfoSelect {
+                    trx: t,
+                    ch: self.active_vfo,
+                }]
+            }
             Action::VfoToggle => {
                 self.active_vfo ^= 1;
                 vec![]
             }
+            Action::Control if state.in_control() => vec![Command::ControlRelease],
+            Action::Control => vec![Command::ControlRequest],
             Action::VfoAToB => vec![Command::Vfo {
                 trx: t,
                 vfo: 1,
@@ -1182,5 +1210,66 @@ mod tests {
             act(&mut e, Action::Tune, &mut s),
             vec![Command::Mox { trx: 0, on: false }]
         );
+    }
+
+    #[test]
+    fn alerts_flash_once() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let t0 = Instant::now();
+        s.push_alert("busy");
+        e.tick(t0, &mut s);
+        assert_eq!(e.view(t0).flash.as_deref(), Some("busy"));
+        // Gone after flash_ms, and not shown again by later ticks.
+        let later = t0 + Duration::from_secs(5);
+        e.tick(later, &mut s);
+        assert_eq!(e.view(later).flash, None);
+    }
+
+    #[test]
+    fn any_input_wakes_after_an_idle_close() {
+        let mut e = Engine::new(Config::default());
+        let mut s = RadioState {
+            idle_closed: true,
+            ..Default::default()
+        };
+        e.handle(InputEvent::Pressed(Button::F2), Instant::now(), &mut s);
+        assert!(!s.idle_closed);
+    }
+
+    #[test]
+    fn vfo_select_follows_and_sets_the_radio() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["vfo_select,rw,enum,0,1"]);
+        let now = Instant::now();
+        assert_eq!(
+            act(&mut e, Action::VfoToggle, &mut s),
+            vec![Command::VfoSelect { trx: 0, ch: 1 }]
+        );
+        assert_eq!(e.view(now).active_vfo, 1);
+        // The radio switches back to A (its own VFO key): we follow.
+        s.trx[0].vfo_selected = Some(0);
+        e.tick(now, &mut s);
+        assert_eq!(e.view(now).active_vfo, 0);
+    }
+
+    #[test]
+    fn control_button_asks_or_gives_up() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["control_request,w,action", "control_release,w,action"]);
+        s.login_user = Some("g0kad".into());
+        s.control = Some("g4abc".into());
+        assert_eq!(
+            act(&mut e, Action::Control, &mut s),
+            vec![Command::ControlRequest]
+        );
+        s.control = Some("g0kad".into());
+        assert_eq!(
+            act(&mut e, Action::Control, &mut s),
+            vec![Command::ControlRelease]
+        );
+        // A server without control: nothing to send.
+        let mut plain = ic7100(&[]);
+        assert!(act(&mut e, Action::Control, &mut plain).is_empty());
     }
 }

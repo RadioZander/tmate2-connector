@@ -38,6 +38,69 @@ pub fn parse(text: &str) -> Option<Msg> {
     })
 }
 
+/// Percent-encode a TCI-X string argument (§2): `%`, `:`, `,`, `;` and
+/// control characters.
+pub fn pct_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | ':' | ',' | ';') || c.is_control() {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Decode a percent-encoded TCI-X string argument. Malformed escapes are
+/// kept as they are.
+pub fn pct_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |j: usize| bytes.get(j).and_then(|b| (*b as char).to_digit(16));
+        match (bytes[i], hex(i + 1), hex(i + 2)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b, ..) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What to flash on the LCD for a TCI-X `error` code (§5.1). The display
+/// has seven segments: no M, so no "timeout".
+pub fn error_text(code: &str) -> &'static str {
+    match code {
+        "busy" => "busy",
+        "control" => "ctrl",
+        "access" => "denied",
+        "range" => "range",
+        "unsupported" => "no",
+        "radio" => "radio",
+        "duplex" => "duplex",
+        "tx_active" => "tx on",
+        "tx_lock" => "tx lock",
+        "tx_audio" => "tx audio",
+        "tx_timer" => "tx tot",
+        "tx_where" => "tx freq",
+        "device" => "device",
+        "interlock" => "interlock",
+        "timeout" => "no reply",
+        "idle" => "idle",
+        _ => "error",
+    }
+}
+
 fn b(s: &str) -> Option<bool> {
     match s.to_ascii_lowercase().as_str() {
         "true" => Some(true),
@@ -179,6 +242,40 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
                 }
             }
         }
+        "receive_only" => state.receive_only = flag(0).unwrap_or(false),
+        "vfo_select" => {
+            if let (Some(t), Some(ch)) = (trx, n(1)) {
+                state.trx_mut(t).vfo_selected = Some(ch.clamp(0, 1) as usize);
+            }
+        }
+        // control:<user>,<since>; or control:; when nobody has it (§4.4).
+        "control" => {
+            state.control = a.first().map(|u| pct_decode(u)).filter(|u| !u.is_empty());
+        }
+        "control_asked" => state.push_alert("ctrl ask"),
+        "control_refused" => state.push_alert("refused"),
+        // error:<command>,<code>[,<text>] (§5.1).
+        "error" => {
+            let (cmd, code) = (a.first().copied().unwrap_or(""), a.get(1).copied().unwrap_or(""));
+            tracing::warn!(
+                "server refused {cmd}: {code} {}",
+                pct_decode(&m.args.get(2..).unwrap_or_default().join(","))
+            );
+            // We showed transmit at once when keying: the radio isn't.
+            if matches!(cmd, "trx" | "tune" | "atu_tune") {
+                for t in &mut state.trx {
+                    t.tx = false;
+                    t.tune = false;
+                }
+            }
+            // A watcher's change names the operator.
+            if code == "control" {
+                if let Some(op) = a.get(2).map(|u| pct_decode(u)).filter(|u| !u.is_empty()) {
+                    state.control = Some(op);
+                }
+            }
+            state.push_alert(error_text(code));
+        }
         "ready" => state.connected = true,
         _ => return false,
     }
@@ -216,11 +313,14 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::AfGain { trx, pct } => format!("af_gain:{trx},{pct};"),
         Command::RfGain { trx, pct } => format!("rf_gain:{trx},{pct};"),
         Command::SquelchKnob { trx, pct } => format!("squelch:{trx},{pct};"),
-        Command::FilterPreset { trx, name } => format!("filter:{trx},0,{name};"),
+        Command::FilterPreset { trx, name } => format!("filter:{trx},0,{};", pct_encode(name)),
         Command::DialLock(on) => format!("dial_lock:{};", tf(*on)),
         Command::NotchAt { trx, on, hz } => format!("notch:{trx},{},{hz};", tf(*on)),
         Command::AtuTune { trx } => format!("atu_tune:{trx};"),
-        Command::Band { trx, name } => format!("band:{trx},{name};"),
+        Command::Band { trx, name } => format!("band:{trx},{};", pct_encode(name)),
+        Command::VfoSelect { trx, ch } => format!("vfo_select:{trx},{ch};"),
+        Command::ControlRequest => "control_request;".to_string(),
+        Command::ControlRelease => "control_release;".to_string(),
         Command::EnableMeters => "rx_sensors_enable:true,200;".to_string(),
         Command::Raw(text) => {
             let t = text.trim();
@@ -386,6 +486,60 @@ mod tests {
             (Some(40), Some(12), Some(1200))
         );
         assert!(t.notch && s.dial_lock);
+    }
+
+    #[test]
+    fn percent_encoding_round_trips() {
+        assert_eq!(pct_encode("a,b:c;d%e"), "a%2Cb%3Ac%3Bd%25e");
+        assert_eq!(pct_decode("a%2Cb%3Ac%3Bd%25e"), "a,b:c;d%e");
+        assert_eq!(pct_decode("100%"), "100%");
+        assert_eq!(pct_decode(&pct_encode("G4ÄBC")), "G4ÄBC");
+    }
+
+    #[test]
+    fn control_and_refusals() {
+        let mut s = RadioState::default();
+        s.trx_mut(0).tx = true; // shown at once on key-up
+        let now = Instant::now();
+        for m in split("control:g4abc,1760729000;error:trx,control,g4abc;") {
+            apply(&mut s, &m, now);
+        }
+        assert_eq!(s.control.as_deref(), Some("g4abc"));
+        assert!(!s.trx[0].tx, "a refused key-up isn't transmitting");
+        assert_eq!((s.alert.as_deref(), s.alert_seq), (Some("ctrl"), 1));
+        for m in split("control:;vfo_select:0,1;receive_only:true;error:atu_tune,interlock,amp;") {
+            apply(&mut s, &m, now);
+        }
+        assert_eq!(s.control, None);
+        assert_eq!(s.trx[0].vfo_selected, Some(1));
+        assert!(s.receive_only);
+        assert_eq!((s.alert.as_deref(), s.alert_seq), (Some("interlock"), 2));
+        // Every flashed text can be drawn on the 7-segment display.
+        for code in [
+            "busy",
+            "control",
+            "access",
+            "range",
+            "unsupported",
+            "radio",
+            "duplex",
+            "tx_active",
+            "tx_lock",
+            "tx_audio",
+            "tx_timer",
+            "tx_where",
+            "device",
+            "interlock",
+            "timeout",
+            "idle",
+            "other",
+        ] {
+            let t = error_text(code);
+            assert!(
+                t.len() <= 9 && t.chars().all(|c| tmate2_hid::font::glyph(c).is_some()),
+                "{code}: {t}"
+            );
+        }
     }
 
     #[test]

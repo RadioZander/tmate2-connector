@@ -128,6 +128,16 @@ pub enum Command {
         trx: usize,
         name: String,
     },
+    /// TCI-X `vfo_select`: make VFO `ch` (0 = A, 1 = B) the active one.
+    VfoSelect {
+        trx: usize,
+        ch: usize,
+    },
+    /// TCI-X `control_request`: ask for control (granted at once when nobody
+    /// has it).
+    ControlRequest,
+    /// TCI-X `control_release`: give control up.
+    ControlRelease,
     /// Ask for periodic signal-strength reports.
     EnableMeters,
     /// Protocol-specific text passed through unchanged (escape hatch).
@@ -168,6 +178,9 @@ impl Command {
             Command::NotchAt { .. } => "notch",
             Command::AtuTune { .. } => "atu_tune",
             Command::Band { .. } => "band",
+            Command::VfoSelect { .. } => "vfo_select",
+            Command::ControlRequest => "control_request",
+            Command::ControlRelease => "control_release",
             Command::EnableMeters => "rx_sensors_enable",
             Command::Raw(_) => return None,
         })
@@ -219,6 +232,7 @@ impl RadioState {
             &Command::SquelchKnob { trx, pct } => self.trx_mut(trx).squelch = Some(pct),
             Command::FilterPreset { trx, name } => self.trx_mut(*trx).filter_preset = Some(name.clone()),
             &Command::DialLock(on) => self.dial_lock = on,
+            &Command::VfoSelect { trx, ch } => self.trx_mut(trx).vfo_selected = Some(ch),
             &Command::NotchAt { trx, on, hz } => {
                 let t = self.trx_mut(trx);
                 t.notch = on;
@@ -228,6 +242,8 @@ impl RadioState {
             Command::Vfo { .. }
             | Command::AtuTune { .. }
             | Command::Band { .. }
+            | Command::ControlRequest
+            | Command::ControlRelease
             | Command::EnableMeters
             | Command::Raw(_) => {}
         }

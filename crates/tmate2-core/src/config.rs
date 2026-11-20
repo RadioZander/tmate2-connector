@@ -54,6 +54,28 @@ pub struct RadioConfig {
     pub port: u16,
     pub tcix: TcixMode,
     pub trx: usize,
+    /// TCI-X login (§4.3), for a server that asks for one.
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Environment variable that supplies the TCI-X password instead of the
+/// configuration file.
+pub const PASSWORD_ENV: &str = "TMATE2_TCIX_PASSWORD";
+
+impl RadioConfig {
+    /// The login to use, if both a user and a password are set (the
+    /// password from the environment first, then the file).
+    pub fn credentials(&self) -> Option<(String, String)> {
+        let user = self.user.as_deref().map(str::trim).filter(|u| !u.is_empty())?;
+        let password = std::env::var(PASSWORD_ENV)
+            .ok()
+            .or_else(|| self.password.clone())
+            .filter(|p| !p.is_empty())?;
+        Some((user.to_string(), password))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -300,6 +322,8 @@ pub enum Action {
     E2Next,
     E1Toggle,
     E2Toggle,
+    /// TCI-X control (§4.4): ask for it, or give it up if we hold it.
+    Control,
     Raw(String),
     None,
 }
@@ -331,6 +355,7 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("e2_next", Action::E2Next),
     ("e1_toggle", Action::E1Toggle),
     ("e2_toggle", Action::E2Toggle),
+    ("control", Action::Control),
     ("none", Action::None),
 ];
 

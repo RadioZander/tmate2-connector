@@ -274,8 +274,30 @@ impl App {
                     None if r.tcix == TcixMode::Off => "TCI-X: off".into(),
                     None => "TCI-X: not offered".into(),
                 });
+                if let (Some(user), Some(role)) = (&radio.login_user, &radio.role) {
+                    ui.separator();
+                    ui.label(format!("Logged in: {user} ({role})"));
+                }
+                if radio.has_tcix("control_request") {
+                    ui.separator();
+                    ui.label(match &radio.control {
+                        _ if radio.in_control() => "Control: you".to_string(),
+                        Some(op) => format!("Control: {op} (you're watching)"),
+                        None => "Control: nobody".to_string(),
+                    });
+                }
             } else {
-                ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port));
+                match radio.notice.as_deref() {
+                    Some("login") => ui.label(format!(
+                        "Radio: {}:{} needs a TCI-X login (see the log)",
+                        r.host, r.port
+                    )),
+                    Some("idle") => ui.label(format!(
+                        "Radio: {}:{} closed the connection after the idle time; touch the TMATE-2 to reconnect",
+                        r.host, r.port
+                    )),
+                    _ => ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port)),
+                };
             }
         });
     }

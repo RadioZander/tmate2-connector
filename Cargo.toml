@@ -32,3 +32,11 @@ strsim = "0.11"
 [profile.release]
 lto = "thin"
 strip = true
+
+# The TCI-X login's scrypt is slow unoptimised; keep debug builds usable.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

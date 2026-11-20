@@ -82,7 +82,7 @@ pub fn render(
         out.set_rgb(r, g, b);
         out.set_usb_led(false);
         out.set_lock_led(false);
-        map.draw_text(out, "main", "no radio");
+        map.draw_text(out, "main", state.notice.as_deref().unwrap_or("no radio"));
         return;
     }
 
@@ -95,7 +95,7 @@ pub fn render(
     };
     out.set_rgb(r, g, b);
     out.set_usb_led(true);
-    out.set_lock_led(trx.lock);
+    out.set_lock_led(trx.lock || state.dial_lock);
 
     // Main display: a flashed value, or the active VFO frequency.
     match &view.flash {
