@@ -484,14 +484,29 @@ impl Engine {
                     .map(|m| Mode::from_name(m))
                     .collect();
                 if !state.modes.is_empty() {
-                    cycle.retain(|m| state.modes.contains(m));
+                    cycle.retain(|m| state.modes.iter().any(|r| r.matches(*m)));
                 }
                 if cycle.is_empty() {
                     vec![]
                 } else {
                     let n = cycle.len() as i32;
-                    let pos = x.mode.and_then(|m| cycle.iter().position(|c| *c == m));
-                    let next = match (pos, *a == Action::ModeNext) {
+                    let forward = *a == Action::ModeNext;
+                    // Plain "CW" can match both a CWL and a CWU entry: step on
+                    // from the last match going forward and the first going
+                    // back, so the cycle never stalls between the two.
+                    let pos = x.mode.and_then(|m| {
+                        let mut hits = cycle
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| c.matches(m))
+                            .map(|(i, _)| i);
+                        if forward {
+                            hits.next_back()
+                        } else {
+                            hits.next()
+                        }
+                    });
+                    let next = match (pos, forward) {
                         (Some(p), true) => (p as i32 + 1).rem_euclid(n),
                         (Some(p), false) => (p as i32 - 1).rem_euclid(n),
                         (None, _) => 0,
@@ -1405,5 +1420,56 @@ mod tests {
             assert_eq!(thetis, want, "{pct}% -> {db} dB");
             assert_eq!(rx_volume_pct(db), want);
         }
+    }
+
+    fn mode(m: Mode) -> Vec<Command> {
+        vec![Command::Mode { trx: 0, mode: m }]
+    }
+
+    /// piHPSDR lists "CW" and "FMN" and reports CWL / CWU both as "CW".
+    #[test]
+    fn mode_cycle_with_plain_cw_and_fmn() {
+        let now = Instant::now();
+        let mut next = engine_with_f4(Action::ModeNext);
+        let mut prev = engine_with_f4(Action::ModePrev);
+        let mut s = connected();
+        s.modes = "LSB,USB,DSB,CW,FMN,AM,DIGU,SPEC,DIGL,SAM,DRM"
+            .split(',')
+            .map(Mode::from_name)
+            .collect();
+        // Default cycle: LSB, USB, CWU, AM, FM, DIGU.
+        assert_eq!(tap(&mut next, &mut s, now), mode(Mode::CwU));
+        s.trx_mut(0).mode = Some(Mode::Cw); // what piHPSDR reports back
+        assert_eq!(tap(&mut next, &mut s, now), mode(Mode::Am));
+        s.trx_mut(0).mode = Some(Mode::Am);
+        assert_eq!(tap(&mut next, &mut s, now), mode(Mode::Fm));
+        s.trx_mut(0).mode = Some(Mode::Cw);
+        assert_eq!(tap(&mut prev, &mut s, now), mode(Mode::Usb));
+    }
+
+    #[test]
+    fn plain_cw_never_stalls_between_cwl_and_cwu() {
+        let now = Instant::now();
+        let with = |a: Action| {
+            let mut cfg = Config::default();
+            cfg.buttons.f4.tap = Some(a);
+            cfg.buttons.f4.hold = None;
+            cfg.tuning.mode_cycle = ["USB", "CWL", "CWU", "AM"].map(String::from).to_vec();
+            Engine::new(cfg)
+        };
+        let mut s = connected();
+        s.modes = vec![Mode::Usb, Mode::Cw, Mode::Am];
+        s.trx_mut(0).mode = Some(Mode::Cw);
+        assert_eq!(tap(&mut with(Action::ModeNext), &mut s, now), mode(Mode::Am));
+        s.trx_mut(0).mode = Some(Mode::Cw);
+        assert_eq!(tap(&mut with(Action::ModePrev), &mut s, now), mode(Mode::Usb));
+    }
+
+    #[test]
+    fn filter_default_does_nothing_in_plain_cw() {
+        let mut e = engine_with_f4(Action::FilterDefault);
+        let mut s = connected();
+        s.trx_mut(0).mode = Some(Mode::Cw);
+        assert_eq!(tap(&mut e, &mut s, Instant::now()), vec![]);
     }
 }

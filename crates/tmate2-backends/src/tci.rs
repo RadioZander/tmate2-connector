@@ -203,6 +203,9 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::Mode {
             mode: Mode::Other, ..
         } => return None,
+        // Plain CW is sent as CWU, which every server we know accepts
+        // (piHPSDR takes "CW" as CWU anyway).
+        Command::Mode { trx, mode: Mode::Cw } => format!("modulation:{trx},CWU;"),
         Command::Mode { trx, mode } => format!("modulation:{trx},{};", mode.name()),
         Command::Filter { trx, low, high } => format!("rx_filter_band:{trx},{low},{high};"),
         Command::Volume { db } => format!("volume:{db:.2};"),
@@ -312,6 +315,50 @@ mod tests {
         assert_eq!(s.cw_speed, Some(22));
         assert!(!s.monitor);
         assert_eq!(s.power, Some(true));
+    }
+
+    /// Init burst from piHPSDR (DL1YCF, 2026-11), one WebSocket frame per
+    /// line, kept exactly as sent (two lines have no ';').
+    const PIHPSDR_INIT: &str = include_str!("../tests/fixtures/pihpsdr-init.tci");
+
+    #[test]
+    fn pihpsdr_init_burst_fills_state() {
+        let mut s = RadioState::default();
+        let now = Instant::now();
+        for line in PIHPSDR_INIT.lines() {
+            for m in split(line) {
+                apply(&mut s, &m, now);
+            }
+        }
+        assert!(s.connected, "ready; seen");
+        assert_eq!(s.protocol.as_deref(), Some("ExpertSDR3,2.0"));
+        assert_eq!(s.device.as_deref(), Some("SunSDR2QRP"));
+        assert_eq!(s.vfo_limits, Some((0, 61_440_000)));
+        // "CW" and "FMN" in modulations_list.
+        assert!(s.modes.contains(&Mode::Cw) && s.modes.contains(&Mode::Fm));
+        let t = &s.trx[0];
+        assert_eq!(t.vfo, [14_009_925, 14_010_000]);
+        assert_eq!(t.mode, Some(Mode::Usb));
+        assert_eq!(t.filter, Some((150, 2850)));
+        // Whole dB, -40..0.
+        assert_eq!(s.volume_db, Some(-20.0));
+        assert_eq!(t.rx_volume_db, Some(-20.0));
+        assert_eq!(t.tune_drive, Some(10));
+        assert_eq!(t.agc_mode.as_deref(), Some("normal"));
+        assert!(t.notch && !t.nr && !t.nb && !t.anf && !t.apf && !t.binaural);
+        assert!(t.rx_enable && !t.tx && !t.lock && !t.split && !s.mute);
+        assert_eq!(s.cw_speed, Some(16));
+        assert_eq!(s.power, Some(true));
+        // One receiver only: nothing for a second trx.
+        assert_eq!(s.trx.len(), 1);
+    }
+
+    #[test]
+    fn plain_cw_is_sent_as_cwu() {
+        let m = |mode| encode(&Command::Mode { trx: 0, mode }).unwrap();
+        assert_eq!(m(Mode::Cw), "modulation:0,CWU;");
+        assert_eq!(m(Mode::CwL), "modulation:0,CWL;");
+        assert_eq!(m(Mode::Fm), "modulation:0,FM;");
     }
 
     #[test]

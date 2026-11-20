@@ -6,7 +6,8 @@
 [radio]
 # How to talk to the radio. Currently: "tci".
 backend = "tci"
-# TCI server address. Thetis: Setup > Serial/Network > TCI.
+# TCI server address. Thetis: Setup > Serial/Network > TCI (port 50001).
+# piHPSDR: Menu > CAT/TCI, tick TCI (port 40001).
 host = "127.0.0.1"
 port = 50001
 # TCI-X extensions (github.com/g0kad/TCI-X):
@@ -29,8 +30,10 @@ readout = "dbm"
 # How long (ms) a value you change with E1 / E2 is shown on the main display.
 flash_ms = 1500
 # How E1 VOL shows and steps the master volume:
-#   "percent" - 0 to 100, matching Thetis's Master AF (1 per click)
-#   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software
+#   "percent" - 0 to 100, matching Thetis's Master AF (1 per click). Needs
+#               software that keeps fractions of a dB, like Thetis.
+#   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software.
+#               Use this with piHPSDR, which works in whole dB from -40 to 0.
 volume_scale = "percent"
 # While transmitting, the S-meter scale is switched off and:
 #   tx_meter   (bargraph):     "power", "swr" (1.8:1 at S9, 3:1 full) or "off"

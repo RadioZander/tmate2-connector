@@ -83,11 +83,12 @@ fn mode_icons(m: Mode) -> &'static [&'static str] {
         Mode::Usb => &["mode.usb"],
         Mode::CwL => &["mode.cw", "mode.cw.minus"],
         Mode::CwU => &["mode.cw", "mode.cw.plus"],
+        Mode::Cw => &["mode.cw"],
         Mode::Am => &["mode.am"],
         Mode::Sam => &["mode.sam"],
         Mode::Dsb => &["mode.dsb"],
-        Mode::Fm => &["mode.fm", "mode.fm.w"],
-        Mode::Nfm => &["mode.fm"],
+        // No W: neither Thetis nor piHPSDR has a wide-FM mode.
+        Mode::Fm | Mode::Nfm => &["mode.fm"],
         Mode::DigL => &["mode.dig", "mode.dig.minus"],
         Mode::DigU => &["mode.dig", "mode.dig.plus"],
         Mode::Drm => &["mode.drm"],
@@ -316,6 +317,28 @@ mod tests {
         assert!(lit(&out, "bar.3") && !lit(&out, "bar.4"));
         assert!(!lit(&out, "unit.w"));
         assert!(lit(&out, "smeter.3.b") && lit(&out, "smeter.2.d") && !lit(&out, "smeter.2.g"));
+    }
+
+    #[test]
+    fn plain_cw_has_no_sideband_and_fm_no_w() {
+        let map = SegmentMap::builtin();
+        let cfg = Config::default();
+        let mut s = RadioState {
+            connected: true,
+            ..Default::default()
+        };
+        let mut out = OutputReport::default();
+        let mut lit = |m: Mode, n: &str| {
+            s.trx_mut(0).mode = Some(m);
+            render(&s, &view(), &cfg.display, &map, &mut out);
+            out.segment(map.get(n).unwrap())
+        };
+        assert!(lit(Mode::Cw, "mode.cw"));
+        assert!(!lit(Mode::Cw, "mode.cw.plus") && !lit(Mode::Cw, "mode.cw.minus"));
+        assert!(lit(Mode::CwL, "mode.cw.minus") && lit(Mode::CwU, "mode.cw.plus"));
+        for m in [Mode::Fm, Mode::Nfm] {
+            assert!(lit(m, "mode.fm") && !lit(m, "mode.fm.w"), "{m:?}");
+        }
     }
 
     #[test]

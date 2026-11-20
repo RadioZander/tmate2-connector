@@ -10,6 +10,9 @@ pub enum Mode {
     Usb,
     CwL,
     CwU,
+    /// CW with the sideband not reported (piHPSDR sends plain "CW" for
+    /// both CWL and CWU).
+    Cw,
     Am,
     Sam,
     Dsb,
@@ -27,12 +30,14 @@ impl Mode {
         match s.to_ascii_uppercase().as_str() {
             "LSB" => Mode::Lsb,
             "USB" => Mode::Usb,
-            "CWL" | "CW" => Mode::CwL,
+            "CWL" => Mode::CwL,
             "CWU" | "CWR" => Mode::CwU,
+            "CW" => Mode::Cw,
             "AM" => Mode::Am,
             "SAM" => Mode::Sam,
             "DSB" => Mode::Dsb,
-            "FM" | "WFM" => Mode::Fm,
+            // piHPSDR lists its FM mode as "FMN" but reports it as "FM".
+            "FM" | "WFM" | "FMN" => Mode::Fm,
             "NFM" => Mode::Nfm,
             "DIGL" | "DIG-" => Mode::DigL,
             "DIGU" | "DIG+" | "DIG" => Mode::DigU,
@@ -48,6 +53,7 @@ impl Mode {
             Mode::Usb => "USB",
             Mode::CwL => "CWL",
             Mode::CwU => "CWU",
+            Mode::Cw => "CW",
             Mode::Am => "AM",
             Mode::Sam => "SAM",
             Mode::Dsb => "DSB",
@@ -62,6 +68,16 @@ impl Mode {
 
     pub fn is_lower_sideband(self) -> bool {
         matches!(self, Mode::Lsb | Mode::CwL | Mode::DigL)
+    }
+
+    /// Whether `self` and `other` can be the same radio mode: equal, or one
+    /// is CW with an unknown sideband and the other is CWL / CWU.
+    pub fn matches(self, other: Mode) -> bool {
+        self == other
+            || matches!(
+                (self, other),
+                (Mode::Cw, Mode::CwL | Mode::CwU) | (Mode::CwL | Mode::CwU, Mode::Cw)
+            )
     }
 }
 
@@ -169,5 +185,28 @@ impl RadioState {
 
     pub fn has_tcix(&self, cap: &str) -> bool {
         self.tcix.as_ref().is_some_and(|c| c.iter().any(|x| x == cap))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_names_from_thetis_and_pihpsdr() {
+        assert_eq!(Mode::from_name("CWL"), Mode::CwL);
+        assert_eq!(Mode::from_name("cwu"), Mode::CwU);
+        assert_eq!(Mode::from_name("CW"), Mode::Cw);
+        assert_eq!(Mode::from_name("FMN"), Mode::Fm);
+        assert_eq!(Mode::from_name("FM"), Mode::Fm);
+        assert_eq!(Mode::from_name("NFM"), Mode::Nfm);
+        assert_eq!(Mode::from_name("SPEC"), Mode::Other);
+    }
+
+    #[test]
+    fn plain_cw_matches_either_sideband() {
+        assert!(Mode::Cw.matches(Mode::CwU) && Mode::CwL.matches(Mode::Cw));
+        assert!(!Mode::CwL.matches(Mode::CwU));
+        assert!(Mode::Usb.matches(Mode::Usb) && !Mode::Cw.matches(Mode::Usb));
     }
 }

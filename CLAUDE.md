@@ -96,6 +96,33 @@ The maintainer wants the LCD to look like a real radio:
 - **Filter presets:** Thetis overwrites them when the filter is adjusted, so
   the connector keeps its own per-mode defaults in `[filters]`.
 
+## piHPSDR TCI behaviour
+
+Seen with DL1YCF piHPSDR (github.com/dl1ycf/pihpsdr, November 2026) on an
+ANAN-G2. The original g0orx/pihpsdr has no TCI, only rigctl on port 19090.
+
+- **Server:** Menu > CAT/TCI, tick TCI. Port 40001, off by default. Don't
+  confuse it with the "Server" menu, which is piHPSDR's own client/server.
+  It reports `protocol:ExpertSDR3,2.0` and `device:SunSDR2QRP`. TCI has no
+  message naming the software, so handle what the server sends and don't
+  branch on which program it is.
+- **Modes:** `modulations_list` has `CW` and `FMN`. Both CWL and CWU are
+  reported as `modulation:…,CW` and FM as `FM`. `Mode::Cw` (sideband unknown)
+  shows plain CW. Setting accepts `CW`/`CWL`/`CWU`/`FM`/`FMN` but not `NFM`.
+- **Volume:** `volume` / `rx_volume` are whole dB from -40 to 0. Use
+  `volume_scale = "db"`; the "percent" scale stalls because the rounded echo
+  undoes each 0.6 dB step.
+- **Meters:** `rx_channel_sensors` and `rx_sensors` arrive once a second
+  whatever interval is asked for. `tx_sensors:0,mic,rms,peak,swr` is sent only
+  while transmitting with forward power.
+- **Filters:** CW filter edges are relative to the sidetone pitch (piHPSDR
+  reports e.g. `-250,250` in both CWL and CWU), unlike Thetis. Not handled
+  yet: sending Thetis-style `[filters]` CW edges would push the passband off
+  the signal. FM ignores filter commands.
+- **Quirks:** `audio_stream_channels` and `audio_stream_samples` have no `;`,
+  harmless because each message is its own WebSocket frame. No TCI-X reply.
+- **Fixture:** `crates/tmate2-backends/tests/fixtures/pihpsdr-init.tci`.
+
 ## Building and checking
 
 ```sh

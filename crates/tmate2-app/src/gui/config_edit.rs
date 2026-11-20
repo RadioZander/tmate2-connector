@@ -196,7 +196,7 @@ mod tests {
         c.buttons.f2.tap = Some(Action::Mode("USB".into()));
         write(&mut doc, &c);
         let text = doc.to_string();
-        assert!(text.contains("# TCI server address. Thetis: Setup > Serial/Network > TCI."));
+        assert!(text.contains("# TCI server address. Thetis: Setup > Serial/Network > TCI (port 50001)."));
         assert!(text.contains("port = 40001"));
         assert!(text.contains("acceleration = 7\n"));
         assert!(
