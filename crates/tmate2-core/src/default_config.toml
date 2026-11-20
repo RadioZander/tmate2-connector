@@ -17,6 +17,13 @@ port = 50001
 tcix = "auto"
 # Which receiver / transceiver the TMATE-2 controls (0 = the first).
 trx = 0
+# TCI-X login, for a server that asks for one (kadrad-hub on another
+# machine, say). Use the same account as your other client (KADRAD's panel)
+# so they share control of the radio. The password can come from the
+# TMATE2_TCIX_PASSWORD environment variable instead of this file; this
+# file is plain text, so keep it private if you put the password here.
+# user = "g0kad"
+# password = ""
 
 [display]
 # LCD contrast in percent: 100 is darkest, 0 is faintest.
@@ -145,6 +152,10 @@ NFM = [-5500, 5500]
 #     power (start / stop the radio)  focus (bring the radio software's
 #     window to the front)  backlight_next (cycle the backlight presets
 #     until the next restart or settings change)
+#   TCI-X (only where the server offers them)
+#     control   ask for control of the radio, or give it up
+#     preamp  att   the next of the radio's preamp settings / attenuator
+#       steps, round again; the PRE and ATT lamps show which
 #   raw:<text>   sends <text> to the radio unchanged, e.g. raw:trx:0,true;
 #   none
 [buttons]
