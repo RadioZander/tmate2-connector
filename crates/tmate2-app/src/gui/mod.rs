@@ -132,7 +132,7 @@ fn button_label(b: Button) -> &'static str {
 }
 
 /// Pick an action: "none", any plain action, "mode:…" or "raw:…".
-fn action_picker(ui: &mut egui::Ui, id: impl std::hash::Hash, value: &mut Option<Action>) {
+fn action_picker(ui: &mut egui::Ui, id: impl egui::AsIdSalt, value: &mut Option<Action>) {
     let text = value
         .as_ref()
         .map_or_else(|| "none".to_string(), Action::to_string);
@@ -567,19 +567,20 @@ fn step_text(hz: u64) -> String {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         if self.shared.stop.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ctx.request_repaint_after(Duration::from_millis(50));
 
-        egui::TopBottomPanel::top("status").show(ctx, |ui| {
+        egui::Panel::top("status").show(ui, |ui| {
             ui.add_space(2.0);
             self.status_bar(ui);
             ui.add_space(2.0);
         });
 
-        egui::TopBottomPanel::bottom("actions").show(ctx, |ui| {
+        egui::Panel::bottom("actions").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let dirty = self.dirty();
@@ -611,7 +612,7 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let report = self.shared.lcd.lock().unwrap().clone();
             ui.vertical_centered(|ui| lcd::show(ui, &report, &self.map));
             ui.add_space(8.0);

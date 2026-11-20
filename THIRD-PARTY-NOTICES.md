@@ -16,6 +16,7 @@ toolkit (crate `epaint_default_fonts`), which are compiled into `tmate2`:
 | Noto Emoji | SIL Open Font Licence 1.1 | [licenses/fonts/OFL.txt](licenses/fonts/OFL.txt) |
 | Hack | MIT / Bitstream Vera | [licenses/fonts/Hack-Regular.txt](licenses/fonts/Hack-Regular.txt) |
 | emoji-icon-font | MIT | [licenses/fonts/emoji-icon-font-mit-license.txt](licenses/fonts/emoji-icon-font-mit-license.txt) |
+| egui-icons (a five-glyph subset of emoji-icon-font) | MIT | [licenses/fonts/emoji-icon-font-mit-license.txt](licenses/fonts/emoji-icon-font-mit-license.txt) |
 
 A headless-only build (`cargo build -p tmate2-app --no-default-features`)
 contains no fonts.

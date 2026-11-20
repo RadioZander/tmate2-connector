@@ -21,7 +21,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 clap.workspace = true
 anyhow.workspace = true
 directories.workspace = true
-eframe = { version = "0.32.3", optional = true }
+eframe = { version = "0.37", optional = true, default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
 toml_edit = { version = "0.25.19", optional = true }
 
 [features]
