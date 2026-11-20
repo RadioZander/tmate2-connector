@@ -22,6 +22,13 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# egui's built-in fonts (Ubuntu Light, Noto Emoji) are under font licences
+# that allow bundling in software of any licence. Allowed for that crate only;
+# their texts ship in licenses/fonts and THIRD-PARTY-NOTICES.md.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
 [bans]
 multiple-versions = "allow"
 

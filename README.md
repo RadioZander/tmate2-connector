@@ -30,6 +30,33 @@ Early development. What exists today:
 See [docs/hardware-bringup.md](docs/hardware-bringup.md) to help confirm the
 hardware map on your own TMATE-2.
 
+## Download
+
+Ready-built versions are on the
+[Releases page](https://github.com/RadioZander/tmate2-connector/releases):
+
+| File | For |
+|---|---|
+| `…-windows-x64.zip` | Windows 10 / 11 |
+| `…-linux-x64.tar.gz` | 64-bit Linux PCs |
+| `…-linux-arm64-raspberry-pi.tar.gz` | Raspberry Pi (64-bit Raspberry Pi OS), e.g. the ANAN-G2's internal Pi |
+| `…-macos-arm64.tar.gz` | Apple-silicon Macs (unsigned, untested) |
+
+Each archive contains `tmate2` (the connector), `tmate2-probe` (hardware
+diagnostics), an example configuration and, on Linux, the udev rule.
+`SHA256SUMS.txt` lets you verify the downloads.
+
+Run `tmate2` to open the window, or `tmate2 --headless` on a machine with no
+screen. The first run writes a commented configuration file and logs where.
+
+## Roadmap
+
+- CAT backends: PowerSDR / Thetis ZZ, Kenwood, Elecraft, Icom CI-V
+- A much larger list of actions available to the buttons
+- piHPSDR on the ANAN-G2's internal Raspberry Pi (headless service)
+- Emulation of the original ELAD HMI serial output (Perseus / PowerSDR)
+- Installers / packages (Windows installer, .deb for the Pi)
+
 ## Building
 
 Install Rust from <https://rustup.rs>.
