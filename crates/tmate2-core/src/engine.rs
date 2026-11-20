@@ -523,14 +523,17 @@ impl Engine {
                     .iter()
                     .map(|m| Mode::from_name(m))
                     .collect();
-                if !state.modes.is_empty() {
-                    cycle.retain(|m| state.modes.contains(m));
-                }
+                cycle.retain(|m| state.offers_mode(*m));
                 if cycle.is_empty() {
                     vec![]
                 } else {
                     let n = cycle.len() as i32;
-                    let pos = x.mode.and_then(|m| cycle.iter().position(|c| *c == m));
+                    let pos = x.mode.and_then(|m| {
+                        cycle
+                            .iter()
+                            .position(|c| *c == m)
+                            .or_else(|| cycle.iter().position(|c| c.same_as(m)))
+                    });
                     let next = match (pos, *a == Action::ModeNext) {
                         (Some(p), true) => (p as i32 + 1).rem_euclid(n),
                         (Some(p), false) => (p as i32 - 1).rem_euclid(n),
@@ -1278,6 +1281,46 @@ mod tests {
         s.trx[0].af_gain = Some(100);
         assert!(e.handle(turn(Encoder::E1, 2), now, &mut s).is_empty());
         assert_eq!(e.view(now).flash.as_deref(), Some("VOL   100"));
+    }
+
+    #[test]
+    fn mode_stepping_uses_the_modes_the_server_has() {
+        // kadrad-hub's IC-7100: `cw` and `cwr`, `nfm` and `wfm`, no `FM`.
+        let mut e = Engine::new(Config::default());
+        let mut s = connected();
+        s.mode_names = "lsb,usb,am,cw,cwr,rtty,rttyr,nfm,wfm,digl,digu,digfm,dv"
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        s.modes = s.mode_names.iter().map(|n| Mode::from_name(n)).collect();
+        // The default cycle: LSB, USB, CWU, AM, FM, DIGU.
+        let mut seen = Vec::new();
+        s.trx[0].mode = Some(Mode::Usb);
+        for _ in 0..6 {
+            let out = act(&mut e, Action::ModeNext, &mut s);
+            let [Command::Mode { mode, .. }] = out[..] else {
+                panic!("{out:?}")
+            };
+            let name = s.mode_wire_name(mode);
+            // The radio reports the mode by its own name.
+            s.trx[0].mode = Some(Mode::from_name(&name));
+            seen.push(name);
+        }
+        assert_eq!(seen, ["cw", "am", "nfm", "digu", "lsb", "usb"]);
+        // A server with Thetis's names is sent those.
+        let mut thetis = connected();
+        thetis.mode_names = vec![
+            "LSB".into(),
+            "USB".into(),
+            "CWL".into(),
+            "CWU".into(),
+            "FM".into(),
+        ];
+        thetis.modes = thetis.mode_names.iter().map(|n| Mode::from_name(n)).collect();
+        assert_eq!(thetis.mode_wire_name(Mode::CwU), "CWU");
+        assert_eq!(thetis.mode_wire_name(Mode::Fm), "FM");
+        // With no list, our own names.
+        assert_eq!(connected().mode_wire_name(Mode::CwU), "CWU");
     }
 
     #[test]

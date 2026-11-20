@@ -25,13 +25,15 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Parse a TCI-style modulation name (case-insensitive).
+    /// Parse a TCI-style modulation name (case-insensitive). A server with
+    /// `cw` and `cwr` (ExpertSDR, kadrad-hub) means the usual CW by `cw`, as
+    /// Thetis does by `CWU`.
     pub fn from_name(s: &str) -> Mode {
         match s.to_ascii_uppercase().as_str() {
             "LSB" => Mode::Lsb,
             "USB" => Mode::Usb,
-            "CWL" | "CW" => Mode::CwL,
-            "CWU" | "CWR" => Mode::CwU,
+            "CWL" | "CWR" => Mode::CwL,
+            "CWU" | "CW" => Mode::CwU,
             "AM" => Mode::Am,
             "SAM" => Mode::Sam,
             "DSB" => Mode::Dsb,
@@ -65,6 +67,24 @@ impl Mode {
 
     pub fn is_lower_sideband(self) -> bool {
         matches!(self, Mode::Lsb | Mode::CwL | Mode::DigL)
+    }
+
+    /// The names a server may know this mode by, the likeliest first:
+    /// servers differ (`CWU` or `cw`, `FM` or `nfm`).
+    fn spellings(self) -> &'static [&'static str] {
+        match self {
+            Mode::CwU => &["CWU", "CW"],
+            Mode::CwL => &["CWL", "CWR"],
+            Mode::Fm => &["FM", "NFM"],
+            Mode::Nfm => &["NFM", "FM"],
+            _ => &[],
+        }
+    }
+
+    /// The same mode for stepping through a list: the two names of
+    /// communications FM count as one.
+    pub fn same_as(self, other: Mode) -> bool {
+        self == other || matches!((self, other), (Mode::Fm, Mode::Nfm) | (Mode::Nfm, Mode::Fm))
     }
 }
 
@@ -127,6 +147,8 @@ pub struct RadioState {
     pub trx: Vec<Trx>,
     /// Modes the radio offers, in its own order.
     pub modes: Vec<Mode>,
+    /// The same list as the server spells it (`modulations_list`).
+    pub mode_names: Vec<String>,
     /// Master volume in dB (TCI: -60 .. 0).
     pub volume_db: Option<f32>,
     pub mute: bool,
@@ -190,6 +212,27 @@ impl RadioState {
     /// Reports of `command` are being ignored (see [`RadioState::guard`]).
     pub fn guarded(&self, command: &str, now: Instant) -> bool {
         self.guards.get(command).is_some_and(|until| now < *until)
+    }
+
+    /// The name to send for `mode`: the server's own spelling where its
+    /// list has the mode under one of its names, else ours.
+    pub fn mode_wire_name(&self, mode: Mode) -> String {
+        let listed = |want: &str| self.mode_names.iter().find(|n| n.eq_ignore_ascii_case(want));
+        listed(mode.name())
+            .or_else(|| mode.spellings().iter().find_map(|s| listed(s)))
+            .cloned()
+            .unwrap_or_else(|| mode.name().to_string())
+    }
+
+    /// The server's list has `mode`, under any of its names. True with no
+    /// list to ask.
+    pub fn offers_mode(&self, mode: Mode) -> bool {
+        self.mode_names.is_empty()
+            || self.modes.contains(&mode)
+            || mode
+                .spellings()
+                .iter()
+                .any(|s| self.mode_names.iter().any(|n| n.eq_ignore_ascii_case(s)))
     }
 
     /// Flash a short message on the display.

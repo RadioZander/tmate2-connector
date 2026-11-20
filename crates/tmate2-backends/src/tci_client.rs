@@ -321,7 +321,7 @@ fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: 
             debug!("not sent (not in the TCI-X manifest): {c:?}");
             continue;
         }
-        out.extend(tci::encode(c));
+        out.extend(tci::encode_for(c, state));
     }
     out
 }

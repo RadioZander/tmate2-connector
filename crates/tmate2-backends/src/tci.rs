@@ -142,7 +142,10 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
     match m.name.as_str() {
         "protocol" => state.protocol = Some(m.args.join(",")),
         "device" => state.device = a.first().map(|s| s.to_string()),
-        "modulations_list" => state.modes = a.iter().map(|s| Mode::from_name(s)).collect(),
+        "modulations_list" => {
+            state.modes = a.iter().map(|s| Mode::from_name(s)).collect();
+            state.mode_names = a.iter().map(|s| s.to_string()).collect();
+        }
         "vfo_limits" => {
             if let (Some(lo), Some(hi)) = (n(0), n(1)) {
                 state.vfo_limits = Some((lo.max(0) as u64, hi.max(0) as u64));
@@ -345,6 +348,15 @@ pub fn encode(cmd: &Command) -> Option<String> {
             }
         }
     })
+}
+
+/// Encode a command for this server: as [`encode`], but a mode goes by the
+/// name the server's own list gives it (`cw`, not `CWU`).
+pub fn encode_for(cmd: &Command, state: &RadioState) -> Option<String> {
+    match cmd {
+        Command::Mode { trx, mode } => Some(format!("modulation:{trx},{};", state.mode_wire_name(*mode))),
+        _ => encode(cmd),
+    }
 }
 
 /// TCI-X negotiation state, fed with every server message. `cap` lines
