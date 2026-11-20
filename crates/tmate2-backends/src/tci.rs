@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use tmate2_core::state::Mode;
-use tmate2_core::{Command, RadioState};
+use tmate2_core::{Command, Manifest, RadioState};
 
 /// One parsed message: lower-case name plus arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +142,43 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
                 state.mute = v;
             }
         }
+        // TCI-X extensions (pushed after cap_end, then on change).
+        "af_gain" => {
+            if let (Some(t), Some(v)) = (trx, f(1)) {
+                state.trx_mut(t).af_gain = Some(v.round() as i32);
+            }
+        }
+        "rf_gain" => {
+            if let (Some(t), Some(v)) = (trx, f(1)) {
+                state.trx_mut(t).rf_gain = Some(v.round() as i32);
+            }
+        }
+        "squelch" => {
+            if let (Some(t), Some(v)) = (trx, f(1)) {
+                state.trx_mut(t).squelch = Some(v.round() as i32);
+            }
+        }
+        // filter:trx,channel,name (channel 0 = main receiver)
+        "filter" => {
+            if let (Some(t), Some(0), Some(name)) = (trx, n(1), a.get(2)) {
+                state.trx_mut(t).filter_preset = Some(name.to_string());
+            }
+        }
+        "dial_lock" => {
+            if let Some(v) = flag(0) {
+                state.dial_lock = v;
+            }
+        }
+        // notch:trx,on,hz
+        "notch" => {
+            if let (Some(t), Some(on)) = (trx, flag(1)) {
+                let x = state.trx_mut(t);
+                x.notch = on;
+                if let Some(hz) = n(2) {
+                    x.notch_hz = Some(hz as i32);
+                }
+            }
+        }
         "ready" => state.connected = true,
         _ => return false,
     }
@@ -176,6 +213,14 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::Lock { trx, on } => format!("lock:{trx},{};", tf(*on)),
         Command::Mox { trx, on } => format!("trx:{trx},{};", tf(*on)),
         Command::Tune { trx, on } => format!("tune:{trx},{};", tf(*on)),
+        Command::AfGain { trx, pct } => format!("af_gain:{trx},{pct};"),
+        Command::RfGain { trx, pct } => format!("rf_gain:{trx},{pct};"),
+        Command::SquelchKnob { trx, pct } => format!("squelch:{trx},{pct};"),
+        Command::FilterPreset { trx, name } => format!("filter:{trx},0,{name};"),
+        Command::DialLock(on) => format!("dial_lock:{};", tf(*on)),
+        Command::NotchAt { trx, on, hz } => format!("notch:{trx},{},{hz};", tf(*on)),
+        Command::AtuTune { trx } => format!("atu_tune:{trx};"),
+        Command::Band { trx, name } => format!("band:{trx},{name};"),
         Command::EnableMeters => "rx_sensors_enable:true,200;".to_string(),
         Command::Raw(text) => {
             let t = text.trim();
@@ -188,22 +233,24 @@ pub fn encode(cmd: &Command) -> Option<String> {
     })
 }
 
-/// TCI-X negotiation state, fed with every server message.
+/// TCI-X negotiation state, fed with every server message. `cap` lines
+/// that arrive after `cap_end` keep updating the manifest (TCI-X §4.2).
 #[derive(Debug, Default)]
 pub struct TcixNegotiation {
     pub replied: bool,
-    pub caps: Vec<String>,
+    pub manifest: Manifest,
     pub done: bool,
 }
 
 impl TcixNegotiation {
-    /// Returns true if the message belonged to the TCI-X handshake.
+    /// Returns true if the message belonged to the TCI-X handshake or
+    /// changed the manifest.
     pub fn feed(&mut self, m: &Msg) -> bool {
         match m.name.as_str() {
             "tcix" => self.replied = true,
             "cap" if self.replied => {
-                if let Some(c) = m.args.first() {
-                    self.caps.push(c.to_ascii_lowercase());
+                if !self.manifest.apply(&m.args) {
+                    tracing::debug!("unreadable TCI-X cap line: {:?}", m.args);
                 }
             }
             "cap_end" if self.replied => self.done = true,
@@ -291,7 +338,85 @@ mod tests {
             assert!(n.feed(&m));
         }
         assert!(n.done);
-        assert_eq!(n.caps, vec!["band", "preamp"]);
+        assert_eq!(n.manifest.names().collect::<Vec<_>>(), vec!["band", "preamp"]);
         assert!(!n.feed(&parse("vfo:0,0,1;").unwrap()));
+        // A later cap line changes the manifest.
+        assert!(n.feed(&parse("cap:preamp,none;").unwrap()));
+        assert!(!n.manifest.has("preamp"));
+    }
+
+    /// Feed a TCI-X example (tci-x/examples) through the handshake and the
+    /// state parser, as the client does.
+    fn hub(example: &str) -> RadioState {
+        let mut s = RadioState::default();
+        let mut n = TcixNegotiation::default();
+        let now = Instant::now();
+        for line in example.lines().filter(|l| l.trim() != "---") {
+            for m in split(line) {
+                if n.feed(&m) {
+                    if n.done {
+                        s.tcix = Some(n.manifest.clone());
+                    }
+                    continue;
+                }
+                apply(&mut s, &m, now);
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn ic7100_manifest_and_extension_state() {
+        let s = hub(include_str!("../tests/fixtures/tcix/ic7100_tcix.txt"));
+        let m = s.tcix.as_ref().expect("negotiated");
+        assert_eq!(m.enum_values("filter").unwrap(), ["fil1", "fil2", "fil3"]);
+        assert!(m.writable("af_gain") && m.writable("squelch") && m.writable("band"));
+        // The IC-7100 has presets, not a continuous passband, and no RF gain.
+        assert!(!s.can_send("rx_filter_band") && !s.can_send("rf_gain"));
+        assert!(!s.can_send("volume") && !s.can_send("lock"));
+        assert_eq!(s.trx[0].filter_preset.as_deref(), Some("fil1"));
+        // Not in the example's push (the hub hadn't read the radio): feed them.
+        let mut s = s;
+        for m in split("af_gain:0,40;squelch:0,12;dial_lock:true;notch:0,true,1200;") {
+            assert!(apply(&mut s, &m, Instant::now()), "{m:?}");
+        }
+        let t = &s.trx[0];
+        assert_eq!(
+            (t.af_gain, t.squelch, t.notch_hz),
+            (Some(40), Some(12), Some(1200))
+        );
+        assert!(t.notch && s.dial_lock);
+    }
+
+    #[test]
+    fn encodes_tcix_commands() {
+        let e = |c: Command| encode(&c).unwrap();
+        assert_eq!(e(Command::AfGain { trx: 0, pct: 40 }), "af_gain:0,40;");
+        assert_eq!(e(Command::SquelchKnob { trx: 0, pct: 5 }), "squelch:0,5;");
+        assert_eq!(e(Command::RfGain { trx: 0, pct: 90 }), "rf_gain:0,90;");
+        assert_eq!(
+            e(Command::FilterPreset {
+                trx: 0,
+                name: "fil2".into()
+            }),
+            "filter:0,0,fil2;"
+        );
+        assert_eq!(e(Command::DialLock(true)), "dial_lock:true;");
+        assert_eq!(
+            e(Command::NotchAt {
+                trx: 0,
+                on: true,
+                hz: 1200
+            }),
+            "notch:0,true,1200;"
+        );
+        assert_eq!(e(Command::AtuTune { trx: 0 }), "atu_tune:0;");
+        assert_eq!(
+            e(Command::Band {
+                trx: 0,
+                name: "20m".into()
+            }),
+            "band:0,20m;"
+        );
     }
 }

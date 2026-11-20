@@ -24,7 +24,7 @@ Early development. What exists today:
 | `tmate2-hid` driver (input reports, encoders, buttons, LCD, backlight, LEDs) | working; input, output and the full LCD map confirmed on HW1.1 / FW1.5 |
 | `tmate2-probe` bring-up tool | working |
 | `tmate2` connector: mapping engine, commented TOML config, LCD renderer | working (headless) |
-| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis |
+| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis. With TCI-X it sends only what the server's manifest lists, uses its extensions (AF / RF gain, squelch, filter presets, band stack, dial lock, notch, tuner) and skips knob functions the radio can't do; checked against kadrad-hub's example manifests, not yet on a radio |
 | CAT backends, HMI emulation, GUI, packaging | planned |
 
 See [docs/hardware-bringup.md](docs/hardware-bringup.md) to help confirm the

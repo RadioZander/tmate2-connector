@@ -3,6 +3,8 @@
 
 use std::time::Instant;
 
+use crate::manifest::Manifest;
+
 /// Operating mode, normalised across backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -98,6 +100,16 @@ pub struct Trx {
     pub sql_level: Option<i32>,
     /// AGC gain / threshold (Thetis "AGC-T"), shown as RF gain.
     pub agc_gain: Option<i32>,
+    /// TCI-X `af_gain`: the radio's own AF gain, 0-100.
+    pub af_gain: Option<i32>,
+    /// TCI-X `rf_gain`, 0-100.
+    pub rf_gain: Option<i32>,
+    /// TCI-X `squelch`: squelch knob position, 0-100.
+    pub squelch: Option<i32>,
+    /// TCI-X `filter`: the named filter preset in use (receiver channel 0).
+    pub filter_preset: Option<String>,
+    /// TCI-X `notch`: the manual notch's audio frequency in Hz.
+    pub notch_hz: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -107,8 +119,8 @@ pub struct RadioState {
     /// Server identification, e.g. "ExpertSDR3,2.0".
     pub protocol: Option<String>,
     pub device: Option<String>,
-    /// TCI-X negotiated; holds the capability names the server announced.
-    pub tcix: Option<Vec<String>>,
+    /// TCI-X negotiated; holds the server's capability manifest.
+    pub tcix: Option<Manifest>,
     pub trx: Vec<Trx>,
     /// Modes the radio offers, in its own order.
     pub modes: Vec<Mode>,
@@ -117,6 +129,8 @@ pub struct RadioState {
     pub mute: bool,
     /// Tuning limits in Hz.
     pub vfo_limits: Option<(u64, u64)>,
+    /// TCI-X `dial_lock`: the radio's own dial lock (one for the radio).
+    pub dial_lock: bool,
 }
 
 impl RadioState {
@@ -142,7 +156,21 @@ impl RadioState {
         t.vfo[vfo] = hz;
     }
 
+    /// The server listed `cap` in its TCI-X manifest.
     pub fn has_tcix(&self, cap: &str) -> bool {
-        self.tcix.as_ref().is_some_and(|c| c.iter().any(|x| x == cap))
+        self.tcix.as_ref().is_some_and(|m| m.has(cap))
+    }
+
+    /// The server takes this command from us. Without TCI-X there is no
+    /// manifest to ask, so every command is tried, as plain TCI clients do.
+    /// With TCI-X, only commands the manifest lists as writable.
+    pub fn can_send(&self, command: &str) -> bool {
+        self.tcix.as_ref().is_none_or(|m| m.writable(command))
+    }
+
+    /// TCI-X negotiated and the server takes this extension command. Used to
+    /// prefer an extension over its base equivalent.
+    pub fn tcix_offers(&self, command: &str) -> bool {
+        self.tcix.as_ref().is_some_and(|m| m.writable(command))
     }
 }

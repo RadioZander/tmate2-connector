@@ -270,7 +270,7 @@ impl App {
                 ));
                 ui.separator();
                 ui.label(match &radio.tcix {
-                    Some(caps) => format!("TCI-X: yes ({} capabilities)", caps.len()),
+                    Some(m) => format!("TCI-X: yes ({} capabilities)", m.len()),
                     None if r.tcix == TcixMode::Off => "TCI-X: off".into(),
                     None => "TCI-X: not offered".into(),
                 });

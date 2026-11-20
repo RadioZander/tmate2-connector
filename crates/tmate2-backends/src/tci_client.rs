@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
 use tmate2_core::config::{RadioConfig, TcixMode};
-use tmate2_core::Command;
+use tmate2_core::{Command, RadioState};
 
 use crate::tci::{self, TcixNegotiation};
 use crate::SharedState;
@@ -91,8 +91,10 @@ async fn serve(
                     for m in tci::split(&text) {
                         if tcix.feed(&m) {
                             if tcix.done {
-                                info!("TCI-X negotiated: {} capabilities", tcix.caps.len());
-                                s.tcix = Some(tcix.caps.clone());
+                                if s.tcix.is_none() {
+                                    info!("TCI-X negotiated: {} capabilities", tcix.manifest.len());
+                                }
+                                s.tcix = Some(tcix.manifest.clone());
                                 tcix_deadline = None;
                             }
                             continue;
@@ -123,7 +125,8 @@ async fn serve(
                 if !ready {
                     continue;
                 }
-                for line in coalesce(first, cmds) {
+                let lines = coalesce(first, cmds, &state.lock().unwrap());
+                for line in lines {
                     send(&mut tx, line).await?;
                 }
             }
@@ -152,8 +155,9 @@ async fn send(tx: &mut futures_util::stream::SplitSink<Ws, Message>, line: Strin
 }
 
 /// Take `first` plus everything already queued, keeping only the newest VFO
-/// frequency per (trx, vfo) so fast tuning never builds a backlog.
-fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>) -> Vec<String> {
+/// frequency per (trx, vfo) so fast tuning never builds a backlog. With
+/// TCI-X, anything the server's manifest doesn't take is dropped here too.
+fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>, state: &RadioState) -> Vec<String> {
     let mut batch = vec![first];
     while let Ok(c) = cmds.try_recv() {
         batch.push(c);
@@ -167,6 +171,10 @@ fn coalesce(first: Command, cmds: &mut mpsc::UnboundedReceiver<Command>) -> Vec<
             if superseded {
                 continue;
             }
+        }
+        if !state.allows(c) {
+            debug!("not sent (not in the TCI-X manifest): {c:?}");
+            continue;
         }
         out.extend(tci::encode(c));
     }
@@ -197,6 +205,7 @@ mod tests {
                 hz: 0,
             },
             &mut rx,
+            &RadioState::default(),
         );
         assert_eq!(out, vec!["vfo:0,0,3;", "mute:true;", "vfo:0,1,9;"]);
     }
