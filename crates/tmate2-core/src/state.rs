@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::manifest::Manifest;
+use crate::manifest::{CapKind, Manifest};
 
 /// Operating mode, normalised across backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -315,6 +315,19 @@ impl RadioState {
             .and_then(|l| l.first());
         x.rx_antenna
             || matches!((x.antenna.as_deref(), first), (Some(a), Some(f)) if !a.eq_ignore_ascii_case(f))
+    }
+
+    /// How far the dial may go, in Hz. With TCI-X, the range the manifest
+    /// gives `vfo`: it can change while connected (a FlexRadio's
+    /// transverter bands are known only once the server has logged in to
+    /// the radio), which the `vfo_limits` of the greeting can't. Without
+    /// one, `vfo_limits`; with neither, anywhere.
+    pub fn dial_limits(&self) -> (u64, u64) {
+        let from_manifest = self.tcix.as_ref().and_then(|m| match m.get("vfo")?.kind {
+            CapKind::Range { min, max, .. } if max > min && min >= 0.0 => Some((min as u64, max as u64)),
+            _ => None,
+        });
+        from_manifest.or(self.vfo_limits).unwrap_or((0, 1_000_000_000))
     }
 
     /// Flash a short message on the display.

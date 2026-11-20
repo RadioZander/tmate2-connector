@@ -350,7 +350,7 @@ impl Engine {
         let cur = state.trx(t).map_or(0, |x| x.vfo[self.active_vfo]) as i64;
         let target = cur + delta as i64 * step * mult;
         let snapped = ((target as f64 / step as f64).round() as i64) * step;
-        let (lo, hi) = state.vfo_limits.unwrap_or((0, 1_000_000_000));
+        let (lo, hi) = state.dial_limits();
         let hz = (snapped.max(0) as u64).clamp(lo, hi);
         if hz != cur as u64 {
             self.emit(
@@ -1407,6 +1407,38 @@ mod tests {
         let mut plain = ic7100(&[]);
         assert!(act(&mut e, Action::Preamp, &mut plain).is_empty());
         assert!(act(&mut e, Action::Att, &mut plain).is_empty());
+    }
+
+    #[test]
+    fn the_dial_goes_as_far_as_the_manifest_says() {
+        // A FlexRadio with a 2 m transverter: the greeting's limits stop at
+        // 54 MHz, and the manifest's `vfo` range, sent once the server knows
+        // the radio's transverters, reaches 2 m.
+        let mut e = Engine::new(Config::default());
+        let mut s = connected();
+        s.vfo_limits = Some((30_000, 54_000_000));
+        s.trx[0].vfo[0] = 144_300_000;
+        let now = Instant::now();
+        // Plain TCI: held to the greeting's limits, as before.
+        assert_eq!(s.dial_limits(), (30_000, 54_000_000));
+        let mut m = crate::Manifest::default();
+        for line in [
+            "vfo,rw,range,30000,54000000,1,hz",
+            "vfo,rw,range,30000,148000000,1,hz",
+        ] {
+            let args: Vec<String> = line.split(',').map(str::to_string).collect();
+            assert!(m.apply(&args));
+        }
+        s.tcix = Some(m);
+        assert_eq!(s.dial_limits(), (30_000, 148_000_000));
+        let out = e.handle(turn(Encoder::Main, 1), now, &mut s);
+        let [Command::Vfo { hz, .. }] = out[..] else {
+            panic!("{out:?}")
+        };
+        assert!((144_300_000..144_301_000).contains(&hz), "stayed on 2 m: {hz}");
+        // A manifest without a range for `vfo` falls back to the greeting's.
+        s.tcix = Some(crate::Manifest::default());
+        assert_eq!(s.dial_limits(), (30_000, 54_000_000));
     }
 
     #[test]
