@@ -78,6 +78,9 @@ pub struct Trx {
     pub filter: Option<(i32, i32)>,
     /// Latest received signal strength in dBm.
     pub rx_dbm: Option<f32>,
+    /// Latest transmit readings (TCI tx_sensors): peak power in W and SWR.
+    pub tx_power_w: Option<f32>,
+    pub tx_swr: Option<f32>,
     pub nr: bool,
     pub nb: bool,
     pub anf: bool,
@@ -98,6 +101,20 @@ pub struct Trx {
     pub sql_level: Option<i32>,
     /// AGC gain / threshold (Thetis "AGC-T"), shown as RF gain.
     pub agc_gain: Option<i32>,
+    /// AGC mode name as TCI sends it: off, long, slow, normal, fast, custom.
+    pub agc_mode: Option<String>,
+    /// Receiver switched on (TCI rx_enable; the first receiver is always on).
+    pub rx_enable: bool,
+    /// Second channel (sub-receiver) of this receiver switched on.
+    pub sub_rx: bool,
+    pub apf: bool,
+    pub binaural: bool,
+    /// This receiver muted (TCI rx_mute), separate from the master mute.
+    pub rx_mute: bool,
+    /// This receiver's own volume in dB (main channel).
+    pub rx_volume_db: Option<f32>,
+    /// Drive used while tuning, in percent.
+    pub tune_drive: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -117,6 +134,14 @@ pub struct RadioState {
     pub mute: bool,
     /// Tuning limits in Hz.
     pub vfo_limits: Option<(u64, u64)>,
+    /// TX monitor.
+    pub monitor: bool,
+    /// Monitor volume in dB (-60 .. 0).
+    pub mon_volume_db: Option<f32>,
+    /// CW keyer speed in words per minute.
+    pub cw_speed: Option<u32>,
+    /// Radio started (TCI start / stop), if reported.
+    pub power: Option<bool>,
 }
 
 impl RadioState {

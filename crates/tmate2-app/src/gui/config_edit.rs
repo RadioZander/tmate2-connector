@@ -4,7 +4,7 @@
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Value};
 
 use tmate2_core::config::{
-    Action, Backend, ButtonAction, Config, KnobFunction, Readout, TcixMode, VolumeScale,
+    Action, Backend, ButtonAction, Config, KnobFunction, Readout, TcixMode, TxMeter, TxReadout, VolumeScale,
 };
 
 /// Set `table.key = v`, keeping the comments above the key and the spacing /
@@ -109,6 +109,27 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     set(
         doc,
         "display",
+        "tx_meter",
+        match d.tx_meter {
+            TxMeter::Power => "power",
+            TxMeter::Swr => "swr",
+            TxMeter::Off => "off",
+        },
+    );
+    set(
+        doc,
+        "display",
+        "tx_readout",
+        match d.tx_readout {
+            TxReadout::Watts => "watts",
+            TxReadout::Swr => "swr",
+            TxReadout::Off => "off",
+        },
+    );
+    set(doc, "display", "tx_power_max_w", d.tx_power_max_w as i64);
+    set(
+        doc,
+        "display",
         "volume_scale",
         match d.volume_scale {
             VolumeScale::Percent => "percent",
@@ -128,6 +149,7 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     set(doc, "tuning", "counts_per_detent", t.counts_per_detent as i64);
     set(doc, "tuning", "filter_step_hz", t.filter_step_hz as i64);
     set(doc, "tuning", "rit_step_hz", t.rit_step_hz as i64);
+    set(doc, "tuning", "fast_multiplier", t.fast_multiplier as i64);
     set(
         doc,
         "tuning",

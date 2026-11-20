@@ -14,13 +14,15 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::watch;
 
 use tmate2_core::config::{
-    Action, ButtonAction, Config, KnobFunction, RadioConfig, Readout, TcixMode, VolumeScale,
+    Action, ButtonAction, Config, KnobFunction, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
+    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS,
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
 
 use crate::shared::Shared;
 
-const E1_CHOICES: [KnobFunction; 7] = [
+// Each knob's labelled functions in LCD order, then the ones without a label.
+const E1_CHOICES: [KnobFunction; 11] = [
     KnobFunction::Vol,
     KnobFunction::Sql,
     KnobFunction::Rfg,
@@ -28,30 +30,26 @@ const E1_CHOICES: [KnobFunction; 7] = [
     KnobFunction::Nr,
     KnobFunction::Nb,
     KnobFunction::An,
+    KnobFunction::RxVol,
+    KnobFunction::MonVol,
+    KnobFunction::CwSpeed,
+    KnobFunction::TuneDrive,
 ];
-const E2_CHOICES: [KnobFunction; 6] = [
+const E2_CHOICES: [KnobFunction; 10] = [
     KnobFunction::High,
     KnobFunction::Low,
     KnobFunction::Width,
     KnobFunction::Shift,
     KnobFunction::Rit,
     KnobFunction::Xit,
+    KnobFunction::RxVol,
+    KnobFunction::MonVol,
+    KnobFunction::CwSpeed,
+    KnobFunction::TuneDrive,
 ];
 const STEP_CHOICES: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
 const HIGHLIGHT: Duration = Duration::from_millis(1500);
 const ALL_SEGMENTS_FOR: Duration = Duration::from_secs(20);
-
-/// Backlight presets: (name, colour).
-const PRESETS: [(&str, [u8; 3]); 8] = [
-    ("White", [255, 255, 255]),
-    ("Warm white", [255, 180, 90]),
-    ("Amber", [255, 120, 0]),
-    ("Red", [255, 0, 0]),
-    ("Green", [0, 255, 0]),
-    ("Cyan", [0, 255, 255]),
-    ("Blue", [0, 0, 255]),
-    ("Rich purple", [140, 0, 255]),
-];
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Tab {
@@ -131,11 +129,12 @@ fn button_label(b: Button) -> &'static str {
     }
 }
 
-/// Pick an action: "none", any plain action, "mode:…" or "raw:…".
+/// Pick an action: "none", any plain action, "mode:…", "agc:…" or "raw:…".
 fn action_picker(ui: &mut egui::Ui, id: impl egui::AsIdSalt, value: &mut Option<Action>) {
     let text = value
         .as_ref()
         .map_or_else(|| "none".to_string(), Action::to_string);
+    let id = ui.make_persistent_id(id);
     egui::ComboBox::from_id_salt(id)
         .width(150.0)
         .selected_text(text)
@@ -151,6 +150,12 @@ fn action_picker(ui: &mut egui::Ui, id: impl egui::AsIdSalt, value: &mut Option<
                 *value = Some(Action::Mode("USB".into()));
             }
             if ui
+                .selectable_label(matches!(value, Some(Action::Agc(_))), "agc:…")
+                .clicked()
+            {
+                *value = Some(Action::Agc("fast".into()));
+            }
+            if ui
                 .selectable_label(matches!(value, Some(Action::Raw(_))), "raw:…")
                 .clicked()
             {
@@ -160,6 +165,16 @@ fn action_picker(ui: &mut egui::Ui, id: impl egui::AsIdSalt, value: &mut Option<
     match value {
         Some(Action::Mode(m)) => {
             ui.add(egui::TextEdit::singleline(m).desired_width(60.0).hint_text("USB"));
+        }
+        Some(Action::Agc(m)) => {
+            egui::ComboBox::from_id_salt(id.with("agc"))
+                .width(80.0)
+                .selected_text(m.as_str())
+                .show_ui(ui, |ui| {
+                    for a in AGC_MODES {
+                        ui.selectable_value(m, a.to_string(), a);
+                    }
+                });
         }
         Some(Action::Raw(r)) => {
             ui.add(
@@ -223,9 +238,16 @@ fn start_picker(ui: &mut egui::Ui, id: &str, knob: &mut tmate2_core::config::Kno
 
 fn knob_functions(ui: &mut egui::Ui, choices: &[KnobFunction], selected: &mut Vec<KnobFunction>) {
     ui.horizontal_wrapped(|ui| {
-        for f in choices {
+        for (i, f) in choices.iter().enumerate() {
+            if i > 0 && !f.has_lcd_label() && choices[i - 1].has_lcd_label() {
+                ui.separator();
+                ui.label(RichText::new("no LCD label:").weak());
+            }
             let mut on = selected.contains(f);
-            if ui.checkbox(&mut on, f.name().to_uppercase()).changed() {
+            if ui
+                .checkbox(&mut on, f.name().replace('_', " ").to_uppercase())
+                .changed()
+            {
                 if on {
                     selected.push(*f);
                 } else if selected.len() > 1 {
@@ -398,6 +420,9 @@ impl App {
                         }
                     });
                 ui.end_row();
+                ui.label("fast multiplies the step by");
+                ui.add(egui::DragValue::new(&mut t.fast_multiplier).range(1..=1000));
+                ui.end_row();
                 ui.label("Modes for mode_next / mode_prev");
                 ui.text_edit_singleline(&mut self.mode_cycle_text);
                 ui.end_row();
@@ -441,6 +466,23 @@ impl App {
                     ui.radio_value(&mut d.volume_scale, VolumeScale::Percent, "0-100 (like Thetis)");
                     ui.radio_value(&mut d.volume_scale, VolumeScale::Db, "dB (-60 to 0)");
                 });
+                ui.end_row();
+                ui.label("Transmit bargraph");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut d.tx_meter, TxMeter::Power, "power");
+                    ui.radio_value(&mut d.tx_meter, TxMeter::Swr, "SWR (1.8:1 at S9)");
+                    ui.radio_value(&mut d.tx_meter, TxMeter::Off, "off");
+                });
+                ui.end_row();
+                ui.label("Transmit readout");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut d.tx_readout, TxReadout::Watts, "watts");
+                    ui.radio_value(&mut d.tx_readout, TxReadout::Swr, "SWR (1_2 = 1.2:1)");
+                    ui.radio_value(&mut d.tx_readout, TxReadout::Off, "off");
+                });
+                ui.end_row();
+                ui.label("Full-scale power (W)");
+                ui.add(egui::DragValue::new(&mut d.tx_power_max_w).range(1..=2000));
                 ui.end_row();
                 ui.label("Show knob values for (ms)");
                 ui.add(egui::DragValue::new(&mut d.flash_ms).range(0..=5000).speed(50));

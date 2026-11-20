@@ -7,7 +7,7 @@ use tmate2_hid::{Button, Encoder, InputEvent};
 
 use crate::bands::{band_of, step_band, BANDS};
 use crate::command::Command;
-use crate::config::{Action, Config, KnobFunction, VolumeScale};
+use crate::config::{Action, Config, KnobFunction, VolumeScale, AGC_CYCLE, BACKLIGHT_PRESETS};
 use crate::state::{Mode, RadioState};
 
 /// How long VFO echoes from the radio are ignored after local tuning.
@@ -52,13 +52,32 @@ pub struct View {
     pub flash: Option<String>,
 }
 
+/// What a button keys for as long as it is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Push-to-talk (`ptt`).
+    Mox,
+    /// Tune carrier (`tune_hold`).
+    Tune,
+}
+
+impl Held {
+    fn of(a: &Action) -> Option<Held> {
+        match a {
+            Action::Ptt => Some(Held::Mox),
+            Action::TuneHold => Some(Held::Tune),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Press {
     at: Instant,
     /// Tap / hold already decided (no further action on release).
     done: bool,
-    /// Transmitting because of this press (push-to-talk): unkey on release.
-    ptt: bool,
+    /// Transmitting because of this press: unkey on release.
+    held: Option<Held>,
     /// Next auto-repeat of the hold action while still held.
     repeat_at: Option<Instant>,
 }
@@ -75,6 +94,10 @@ pub struct Engine {
     band_mem: Vec<Option<u64>>,
     recent: VecDeque<(Instant, i32)>,
     flash: Option<(String, Instant)>,
+    /// `fast`: main knob step times `tuning.fast_multiplier`.
+    fast: bool,
+    /// `knob_rx2`: control the other receiver instead of `radio.trx`.
+    other_rx: bool,
 }
 
 impl Engine {
@@ -97,6 +120,8 @@ impl Engine {
             band_mem: vec![None; BANDS.len()],
             recent: VecDeque::new(),
             flash: None,
+            fast: false,
+            other_rx: false,
         }
     }
 
@@ -127,8 +152,15 @@ impl Engine {
         self.cfg = cfg;
     }
 
+    /// The receiver being controlled: `radio.trx`, or the other one of the
+    /// first two after `knob_rx2`.
     fn trx(&self) -> usize {
-        self.cfg.radio.trx
+        let base = self.cfg.radio.trx;
+        match (self.other_rx, base) {
+            (false, _) => base,
+            (true, 0) => 1,
+            (true, _) => 0,
+        }
     }
 
     fn step_hz(&self) -> u64 {
@@ -184,10 +216,10 @@ impl Engine {
                     .and_then(|e| self.last_turn[enc_index(e)])
                     .is_some_and(|t| now.duration_since(t) < lockout);
                 let act = self.cfg.buttons.get(b).clone();
-                let ptt = !accidental && act.tap == Some(Action::Ptt);
-                let immediate = accidental || ptt || act.hold.is_none();
-                if ptt {
-                    self.key(true, now, state, &mut out);
+                let held = act.tap.as_ref().and_then(Held::of).filter(|_| !accidental);
+                let immediate = accidental || held.is_some() || act.hold.is_none();
+                if let Some(h) = held {
+                    self.key(h, true, now, state, &mut out);
                 } else if immediate && !accidental {
                     if let Some(a) = &act.tap {
                         self.action(a, now, state, &mut out);
@@ -198,15 +230,15 @@ impl Engine {
                     Press {
                         at: now,
                         done: immediate,
-                        ptt,
+                        held,
                         repeat_at: None,
                     },
                 );
             }
             InputEvent::Released(b) => {
                 if let Some(p) = self.pressed.remove(&b) {
-                    if p.ptt {
-                        self.key(false, now, state, &mut out);
+                    if let Some(h) = p.held {
+                        self.key(h, false, now, state, &mut out);
                     } else if !p.done {
                         if let Some(a) = self.cfg.buttons.get(b).tap.clone() {
                             self.action(&a, now, state, &mut out);
@@ -238,10 +270,10 @@ impl Engine {
             let first = !p.done;
             p.done = true;
             let Some(a) = hold_action else { continue };
-            if a == Action::Ptt {
+            if let Some(h) = Held::of(&a) {
                 if first {
-                    p.ptt = true;
-                    self.key(true, now, state, &mut out);
+                    p.held = Some(h);
+                    self.key(h, true, now, state, &mut out);
                 }
                 continue;
             }
@@ -251,18 +283,27 @@ impl Engine {
         out
     }
 
-    /// Unkey any push-to-talk and forget held buttons (device lost, quitting).
+    /// Unkey anything keyed by a held button and forget held buttons
+    /// (device lost, quitting).
     pub fn release_all(&mut self, now: Instant, state: &mut RadioState) -> Vec<Command> {
         let mut out = Vec::new();
-        if self.pressed.drain().any(|(_, p)| p.ptt) {
-            self.key(false, now, state, &mut out);
+        let held: Vec<Held> = self.pressed.drain().filter_map(|(_, p)| p.held).collect();
+        for h in [Held::Mox, Held::Tune] {
+            if held.contains(&h) {
+                self.key(h, false, now, state, &mut out);
+            }
         }
         out
     }
 
-    fn key(&self, on: bool, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
+    fn key(&self, h: Held, on: bool, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
         if state.connected || !on {
-            self.emit(Command::Mox { trx: self.trx(), on }, now, state, out);
+            let trx = self.trx();
+            let cmd = match h {
+                Held::Mox => Command::Mox { trx, on },
+                Held::Tune => Command::Tune { trx, on },
+            };
+            self.emit(cmd, now, state, out);
         }
     }
 
@@ -293,7 +334,12 @@ impl Engine {
         let accel = self.cfg.tuning.acceleration.clamp(0.0, 10.0) * 0.8;
         let mult = (1.0 + accel * (rate as f32 / 8.0).powi(2)).min(500.0) as i64;
 
-        let step = self.step_hz() as i64;
+        let fast = if self.fast {
+            self.cfg.tuning.fast_multiplier.max(1)
+        } else {
+            1
+        };
+        let step = (self.step_hz() * fast) as i64;
         let cur = state.trx(t).map_or(0, |x| x.vfo[self.active_vfo]) as i64;
         let target = cur + delta as i64 * step * mult;
         let snapped = ((target as f64 / step as f64).round() as i64) * step;
@@ -326,7 +372,6 @@ impl Engine {
         let x = state.trx_mut(t).clone();
         let fs = self.cfg.tuning.filter_step_hz * d;
         let rs = self.cfg.tuning.rit_step_hz * d;
-        let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
         let cmd = match f {
             KnobFunction::Vol => {
                 let cur = state.volume_db.unwrap_or(-30.0);
@@ -352,28 +397,7 @@ impl Engine {
             KnobFunction::Nb => Some(Command::Nb { trx: t, on: d > 0 }),
             KnobFunction::An => Some(Command::Anf { trx: t, on: d > 0 }),
             KnobFunction::Width | KnobFunction::High | KnobFunction::Low | KnobFunction::Shift => {
-                x.filter.map(|(lo, hi)| {
-                    let (mut lo, mut hi) = (lo, hi);
-                    match (f, lsb) {
-                        // Each edge moves half a step, so the width changes by
-                        // one filter step per click about a fixed centre.
-                        (KnobFunction::Width, _) => (lo, hi) = (lo - fs / 2, hi + fs / 2),
-                        (KnobFunction::High, false) => hi += fs,
-                        (KnobFunction::High, true) => lo -= fs,
-                        (KnobFunction::Low, false) => lo += fs,
-                        (KnobFunction::Low, true) => hi -= fs,
-                        (_, false) => (lo, hi) = (lo + fs, hi + fs),
-                        (_, true) => (lo, hi) = (lo - fs, hi - fs),
-                    }
-                    if hi - lo < 50 {
-                        (lo, hi) = x.filter.unwrap();
-                    }
-                    Command::Filter {
-                        trx: t,
-                        low: lo,
-                        high: hi,
-                    }
-                })
+                filter_change(f, fs, t, &x)
             }
             KnobFunction::Rit => Some(Command::RitOffset {
                 trx: t,
@@ -383,11 +407,38 @@ impl Engine {
                 trx: t,
                 hz: (x.xit_offset + rs).clamp(-9990, 9990),
             }),
+            KnobFunction::MonVol => {
+                let cur = state.mon_volume_db.unwrap_or(-30.0);
+                let db = match self.cfg.display.volume_scale {
+                    VolumeScale::Percent => volume_db((volume_pct(cur) + d).clamp(0, 100)),
+                    VolumeScale::Db => (cur.round() + d as f32).clamp(-60.0, 0.0),
+                };
+                Some(Command::MonVolume { db })
+            }
+            KnobFunction::CwSpeed => Some(Command::CwSpeed(
+                (state.cw_speed.unwrap_or(20) as i32 + d).clamp(1, 60) as u32,
+            )),
+            KnobFunction::TuneDrive => Some(Command::TuneDrive {
+                trx: t,
+                pct: (x.tune_drive.unwrap_or(0) as i32 + d).clamp(0, 100) as u8,
+            }),
+            KnobFunction::RxVol => {
+                let cur = rx_volume_pct(x.rx_volume_db.unwrap_or(-6.0));
+                Some(Command::RxVolume {
+                    trx: t,
+                    db: rx_volume_db((cur + d).clamp(0, 100)),
+                })
+            }
         };
         if let Some(c) = cmd {
             self.emit(c, now, state, out);
         }
         self.flash_value(f, now, state);
+    }
+
+    /// Show "LABEL  value" on the main display for a moment.
+    fn flash_text(&mut self, label: &str, value: &str, now: Instant) {
+        self.flash = Some((format!("{label:<4}{value:>5}"), now));
     }
 
     fn flash_value(&mut self, f: KnobFunction, now: Instant, state: &RadioState) {
@@ -401,7 +452,13 @@ impl Engine {
             // Only local UI actions make sense without a radio.
             if !matches!(
                 a,
-                Action::StepNext | Action::StepPrev | Action::E1Next | Action::E2Next
+                Action::StepNext
+                    | Action::StepPrev
+                    | Action::E1Next
+                    | Action::E2Next
+                    | Action::Fast
+                    | Action::KnobRx2
+                    | Action::BacklightNext
             ) {
                 return;
             }
@@ -458,6 +515,56 @@ impl Engine {
                 vfo: 1,
                 hz: x.vfo[0],
             }],
+            Action::VfoBToA => vec![Command::Vfo {
+                trx: t,
+                vfo: 0,
+                hz: x.vfo[1],
+            }],
+            Action::Fast => {
+                self.fast = !self.fast;
+                self.flash_text("FASt", on_off(self.fast), now);
+                vec![]
+            }
+            Action::Rx2 => {
+                let on = !state.trx(1).is_some_and(|r| r.rx_enable);
+                self.flash_text("rX2", on_off(on), now);
+                vec![Command::RxEnable { trx: 1, on }]
+            }
+            Action::SubRx => {
+                self.flash_text("Sub", on_off(!x.sub_rx), now);
+                vec![Command::SubRx {
+                    trx: t,
+                    on: !x.sub_rx,
+                }]
+            }
+            Action::KnobRx2 => {
+                self.other_rx = !self.other_rx;
+                self.active_vfo = 0;
+                let n = self.trx() + 1;
+                self.flash_text("rX", &n.to_string(), now);
+                vec![]
+            }
+            Action::FilterDefault => {
+                let cmds: Vec<Command> = x
+                    .mode
+                    .and_then(|m| self.cfg.default_filter(m.name()))
+                    .map(|(low, high)| Command::Filter { trx: t, low, high })
+                    .into_iter()
+                    .collect();
+                self.emit_all(cmds, now, state, out);
+                self.flash_value(KnobFunction::Width, now, state);
+                vec![]
+            }
+            Action::FilterWider | Action::FilterNarrower => {
+                let fs = self.cfg.tuning.filter_step_hz;
+                let fs = if *a == Action::FilterWider { fs } else { -fs };
+                let cmds: Vec<Command> = filter_change(KnobFunction::Width, fs, t, &x)
+                    .into_iter()
+                    .collect();
+                self.emit_all(cmds, now, state, out);
+                self.flash_value(KnobFunction::Width, now, state);
+                vec![]
+            }
             Action::VfoSwap => vec![
                 Command::Vfo {
                     trx: t,
@@ -473,18 +580,78 @@ impl Engine {
             Action::Split => vec![Command::Split { trx: t, on: !x.split }],
             Action::Rit => vec![Command::Rit { trx: t, on: !x.rit }],
             Action::Xit => vec![Command::Xit { trx: t, on: !x.xit }],
-            Action::RitClear => vec![
+            Action::RitClear => vec![Command::RitOffset { trx: t, hz: 0 }],
+            Action::XitClear => vec![Command::XitOffset { trx: t, hz: 0 }],
+            Action::RitXitClear => vec![
                 Command::RitOffset { trx: t, hz: 0 },
                 Command::XitOffset { trx: t, hz: 0 },
             ],
             Action::Lock => vec![Command::Lock { trx: t, on: !x.lock }],
             Action::Mute => vec![Command::Mute(!state.mute)],
+            Action::Rx1Mute | Action::Rx2Mute => {
+                let r = if *a == Action::Rx1Mute { 0 } else { 1 };
+                let on = !state.trx(r).is_some_and(|x| x.rx_mute);
+                vec![Command::RxMute { trx: r, on }]
+            }
             Action::Nr => vec![Command::Nr { trx: t, on: !x.nr }],
             Action::Nb => vec![Command::Nb { trx: t, on: !x.nb }],
             Action::Anf => vec![Command::Anf { trx: t, on: !x.anf }],
             Action::Notch => vec![Command::Notch { trx: t, on: !x.notch }],
+            Action::Squelch => {
+                self.emit(
+                    Command::Squelch {
+                        trx: t,
+                        enable: !x.sql_enable,
+                    },
+                    now,
+                    state,
+                    out,
+                );
+                self.flash_value(KnobFunction::Sql, now, state);
+                vec![]
+            }
+            Action::AgcNext | Action::Agc(_) => {
+                let mode = match a {
+                    Action::Agc(m) => m.clone(),
+                    _ => {
+                        let pos = x
+                            .agc_mode
+                            .as_deref()
+                            .and_then(|m| AGC_CYCLE.iter().position(|c| *c == m));
+                        let next = pos.map_or(0, |p| (p + 1) % AGC_CYCLE.len());
+                        AGC_CYCLE[next].to_string()
+                    }
+                };
+                self.flash_text("AGC", agc_text(&mode), now);
+                vec![Command::AgcMode { trx: t, mode }]
+            }
+            Action::Apf => {
+                self.flash_text("APF", on_off(!x.apf), now);
+                vec![Command::Apf { trx: t, on: !x.apf }]
+            }
+            Action::Binaural => {
+                self.flash_text("bin", on_off(!x.binaural), now);
+                vec![Command::Binaural {
+                    trx: t,
+                    on: !x.binaural,
+                }]
+            }
+            Action::Monitor => {
+                self.flash_text("nnon", on_off(!state.monitor), now);
+                vec![Command::Monitor(!state.monitor)]
+            }
             Action::Tune => vec![Command::Tune { trx: t, on: !x.tune }],
             Action::Mox => vec![Command::Mox { trx: t, on: !x.tx }],
+            // Unknown power state counts as running, so the first press stops.
+            Action::Power => vec![Command::Power(!state.power.unwrap_or(true))],
+            Action::Focus => vec![Command::Focus],
+            Action::BacklightNext => {
+                let cur = self.cfg.display.backlight;
+                let i = BACKLIGHT_PRESETS.iter().position(|(_, c)| *c == cur);
+                let next = i.map_or(0, |i| (i + 1) % BACKLIGHT_PRESETS.len());
+                self.cfg.display.backlight = BACKLIGHT_PRESETS[next].1;
+                vec![]
+            }
             Action::StepNext | Action::StepPrev => {
                 let n = self.cfg.tuning.steps_hz.len() as i32;
                 let dir = if *a == Action::StepNext { 1 } else { -1 };
@@ -530,13 +697,81 @@ impl Engine {
                 vec![]
             }
             Action::Raw(text) => vec![Command::Raw(text.clone())],
-            // Push-to-talk is handled on press / release, not here.
-            Action::Ptt => vec![],
+            // Push-to-talk and tune_hold are handled on press / release.
+            Action::Ptt | Action::TuneHold => vec![],
             Action::None => vec![],
         };
+        self.emit_all(cmds, now, state, out);
+    }
+
+    fn emit_all(&self, cmds: Vec<Command>, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
         for c in cmds {
             self.emit(c, now, state, out);
         }
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// AGC mode as seven segments can show it ("m" can't be drawn).
+fn agc_text(mode: &str) -> &'static str {
+    match mode {
+        "off" => "off",
+        "long" => "Long",
+        "slow" => "SLo",
+        "normal" => "nor",
+        "fast" => "FASt",
+        "custom" => "CUSt",
+        _ => "--",
+    }
+}
+
+/// New filter after moving it by `fs` Hz as filter function `f` does, or
+/// `None` without a filter. Never narrower than 50 Hz.
+fn filter_change(f: KnobFunction, fs: i32, trx: usize, x: &crate::state::Trx) -> Option<Command> {
+    let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
+    x.filter.map(|(lo, hi)| {
+        let (mut lo, mut hi) = (lo, hi);
+        match (f, lsb) {
+            // Each edge moves half a step, so the width changes by one
+            // filter step per click about a fixed centre.
+            (KnobFunction::Width, _) => (lo, hi) = (lo - fs / 2, hi + fs / 2),
+            (KnobFunction::High, false) => hi += fs,
+            (KnobFunction::High, true) => lo -= fs,
+            (KnobFunction::Low, false) => lo += fs,
+            (KnobFunction::Low, true) => hi -= fs,
+            (_, false) => (lo, hi) = (lo + fs, hi + fs),
+            (_, true) => (lo, hi) = (lo - fs, hi - fs),
+        }
+        if hi - lo < 50 {
+            (lo, hi) = x.filter.unwrap();
+        }
+        Command::Filter {
+            trx,
+            low: lo,
+            high: hi,
+        }
+    })
+}
+
+/// A receiver's own volume (Thetis RX1 / RX2 AF) as the 0-100 Thetis shows:
+/// amplitude in percent, so -6 dB is 50.
+pub fn rx_volume_pct(db: f32) -> i32 {
+    (10f32.powf(db.clamp(-60.0, 0.0) / 20.0) * 100.0).round() as i32
+}
+
+/// Inverse of [`rx_volume_pct`], aimed a little above the step because
+/// Thetis truncates when converting back (see [`volume_db`]).
+pub fn rx_volume_db(pct: i32) -> f32 {
+    match pct.clamp(0, 100) {
+        0 => -60.0,
+        p => (20.0 * ((p as f32 + 0.05) / 100.0).log10()).min(0.0),
     }
 }
 
@@ -583,6 +818,16 @@ pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize, volume: Volum
         KnobFunction::Rit => ("rit", num(Some(x.rit_offset))),
         KnobFunction::Xit if !x.xit => ("Hit", "off".to_string()),
         KnobFunction::Xit => ("Hit", num(Some(x.xit_offset))),
+        KnobFunction::MonVol => (
+            "nnon",
+            num(state.mon_volume_db.map(|db| match volume {
+                VolumeScale::Percent => volume_pct(db),
+                VolumeScale::Db => db.round() as i32,
+            })),
+        ),
+        KnobFunction::CwSpeed => ("SPd", num(state.cw_speed.map(|w| w as i32))),
+        KnobFunction::TuneDrive => ("tdr", num(x.tune_drive.map(i32::from))),
+        KnobFunction::RxVol => ("AF", num(x.rx_volume_db.map(rx_volume_pct))),
     };
     format!("{label:<4}{value:>5}")
 }
@@ -880,5 +1125,285 @@ mod tests {
                 high: -100
             }]
         );
+    }
+
+    /// Tap F4 (configured to `a`, no hold) and return what was sent.
+    fn tap(e: &mut Engine, s: &mut RadioState, now: Instant) -> Vec<Command> {
+        let mut c = e.handle(InputEvent::Pressed(Button::F4), now, s);
+        c.extend(e.handle(InputEvent::Released(Button::F4), now, s));
+        c
+    }
+
+    fn engine_with_f4(a: Action) -> Engine {
+        let mut cfg = Config::default();
+        cfg.buttons.f4.tap = Some(a);
+        cfg.buttons.f4.hold = None;
+        Engine::new(cfg)
+    }
+
+    #[test]
+    fn fast_multiplies_the_step() {
+        let mut e = engine_with_f4(Action::Fast);
+        let mut s = connected();
+        let now = Instant::now();
+        assert!(tap(&mut e, &mut s, now).is_empty(), "fast is local only");
+        let c = e.handle(turn(Encoder::Main, 1), now, &mut s);
+        // Main knob is not inverted at this level: +1 count = +10 Hz x 10.
+        assert_eq!(
+            c,
+            vec![Command::Vfo {
+                trx: 0,
+                vfo: 0,
+                hz: 14_074_100
+            }]
+        );
+        tap(&mut e, &mut s, now + Duration::from_secs(1));
+        let c = e.handle(turn(Encoder::Main, 1), now + Duration::from_secs(2), &mut s);
+        assert_eq!(
+            c,
+            vec![Command::Vfo {
+                trx: 0,
+                vfo: 0,
+                hz: 14_074_110
+            }]
+        );
+    }
+
+    #[test]
+    fn tune_hold_tunes_only_while_held() {
+        let mut cfg = Config::default();
+        cfg.buttons.f2.tap = None;
+        cfg.buttons.f2.hold = Some(Action::TuneHold);
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        let t0 = Instant::now();
+        assert!(e.handle(InputEvent::Pressed(Button::F2), t0, &mut s).is_empty());
+        let c = e.tick(t0 + Duration::from_millis(600), &mut s);
+        assert_eq!(c, vec![Command::Tune { trx: 0, on: true }]);
+        assert!(
+            e.tick(t0 + Duration::from_secs(2), &mut s).is_empty(),
+            "no repeat"
+        );
+        let c = e.handle(
+            InputEvent::Released(Button::F2),
+            t0 + Duration::from_secs(3),
+            &mut s,
+        );
+        assert_eq!(c, vec![Command::Tune { trx: 0, on: false }]);
+        // Device lost while tuning: release_all stops the carrier.
+        e.handle(InputEvent::Pressed(Button::F2), t0, &mut s);
+        e.tick(t0 + Duration::from_millis(600), &mut s);
+        assert_eq!(
+            e.release_all(t0, &mut s),
+            vec![Command::Tune { trx: 0, on: false }]
+        );
+    }
+
+    #[test]
+    fn rit_and_xit_clear_separately_or_together() {
+        let now = Instant::now();
+        let cases = [
+            (Action::RitClear, vec![Command::RitOffset { trx: 0, hz: 0 }]),
+            (Action::XitClear, vec![Command::XitOffset { trx: 0, hz: 0 }]),
+            (
+                Action::RitXitClear,
+                vec![
+                    Command::RitOffset { trx: 0, hz: 0 },
+                    Command::XitOffset { trx: 0, hz: 0 },
+                ],
+            ),
+        ];
+        for (a, want) in cases {
+            let mut e = engine_with_f4(a);
+            let mut s = connected();
+            assert_eq!(tap(&mut e, &mut s, now), want);
+        }
+    }
+
+    #[test]
+    fn knob_rx2_moves_control_to_the_other_receiver() {
+        let mut e = engine_with_f4(Action::KnobRx2);
+        let mut s = connected();
+        s.trx_mut(1).vfo = [3_573_000, 0];
+        let now = Instant::now();
+        tap(&mut e, &mut s, now);
+        assert_eq!(e.view(now).trx, 1);
+        let c = e.handle(turn(Encoder::Main, 1), now, &mut s);
+        assert_eq!(
+            c,
+            vec![Command::Vfo {
+                trx: 1,
+                vfo: 0,
+                hz: 3_573_010
+            }]
+        );
+        tap(&mut e, &mut s, now);
+        assert_eq!(e.view(now).trx, 0);
+    }
+
+    #[test]
+    fn filter_wider_and_narrower_step_the_width() {
+        let now = Instant::now();
+        let mut e = engine_with_f4(Action::FilterWider);
+        let mut s = connected();
+        assert_eq!(
+            tap(&mut e, &mut s, now),
+            vec![Command::Filter {
+                trx: 0,
+                low: 75,
+                high: 2825
+            }]
+        );
+        let mut e = engine_with_f4(Action::FilterNarrower);
+        let mut s = connected();
+        assert_eq!(
+            tap(&mut e, &mut s, now),
+            vec![Command::Filter {
+                trx: 0,
+                low: 125,
+                high: 2775
+            }]
+        );
+    }
+
+    #[test]
+    fn filter_default_restores_the_saved_filter() {
+        let mut e = engine_with_f4(Action::FilterDefault);
+        let mut s = connected();
+        assert_eq!(
+            tap(&mut e, &mut s, Instant::now()),
+            vec![Command::Filter {
+                trx: 0,
+                low: 100,
+                high: 2500
+            }]
+        );
+    }
+
+    #[test]
+    fn agc_next_cycles_and_agc_sets() {
+        let now = Instant::now();
+        let mut e = engine_with_f4(Action::AgcNext);
+        let mut s = connected();
+        s.trx_mut(0).agc_mode = Some("normal".into());
+        let agc = |m: &str| {
+            vec![Command::AgcMode {
+                trx: 0,
+                mode: m.into(),
+            }]
+        };
+        assert_eq!(tap(&mut e, &mut s, now), agc("fast"));
+        assert_eq!(e.view(now).flash.as_deref(), Some("AGC  FASt"));
+        assert_eq!(tap(&mut e, &mut s, now), agc("long"), "wraps round");
+        let mut e = engine_with_f4(Action::Agc("off".into()));
+        assert_eq!(tap(&mut e, &mut s, now), agc("off"));
+    }
+
+    #[test]
+    fn toggles_send_the_opposite_state() {
+        let now = Instant::now();
+        let mut s = connected();
+        s.trx_mut(1).rx_enable = false;
+        s.trx_mut(1).rx_mute = true;
+        s.monitor = true;
+        let cases = [
+            (Action::Rx2, Command::RxEnable { trx: 1, on: true }),
+            (Action::SubRx, Command::SubRx { trx: 0, on: true }),
+            (Action::Apf, Command::Apf { trx: 0, on: true }),
+            (Action::Binaural, Command::Binaural { trx: 0, on: true }),
+            (Action::Rx1Mute, Command::RxMute { trx: 0, on: true }),
+            (Action::Rx2Mute, Command::RxMute { trx: 1, on: false }),
+            (Action::Monitor, Command::Monitor(false)),
+            (Action::Squelch, Command::Squelch { trx: 0, enable: true }),
+            (
+                Action::VfoBToA,
+                Command::Vfo {
+                    trx: 0,
+                    vfo: 0,
+                    hz: 7_074_000,
+                },
+            ),
+            (Action::Power, Command::Power(false)),
+            (Action::Focus, Command::Focus),
+        ];
+        for (a, want) in cases {
+            let mut e = engine_with_f4(a.clone());
+            let mut st = s.clone();
+            assert_eq!(tap(&mut e, &mut st, now), vec![want], "{a}");
+        }
+    }
+
+    #[test]
+    fn backlight_next_cycles_presets_without_a_radio() {
+        let mut e = engine_with_f4(Action::BacklightNext);
+        let mut s = RadioState::default();
+        assert_eq!(e.config().display.backlight, [255, 255, 255], "white");
+        assert!(tap(&mut e, &mut s, Instant::now()).is_empty());
+        assert_eq!(e.config().display.backlight, [255, 180, 90], "warm white");
+    }
+
+    #[test]
+    fn unlabelled_knob_functions() {
+        let mut cfg = Config::default();
+        cfg.e1.functions = vec![
+            KnobFunction::CwSpeed,
+            KnobFunction::RxVol,
+            KnobFunction::TuneDrive,
+            KnobFunction::MonVol,
+        ];
+        cfg.e1.start = None;
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        s.cw_speed = Some(22);
+        s.trx_mut(0).rx_volume_db = Some(-1.94); // Thetis RX1 AF 80
+        s.trx_mut(0).tune_drive = Some(28);
+        s.mon_volume_db = Some(-30.0);
+        let now = Instant::now();
+        let click = |e: &mut Engine, s: &mut RadioState| e.handle(turn(Encoder::E1, 2), now, s);
+        assert_eq!(click(&mut e, &mut s), vec![Command::CwSpeed(23)]);
+        assert_eq!(e.view(now).flash.as_deref(), Some("SPd    23"));
+        e.handle(
+            InputEvent::Pressed(Button::E1Push),
+            now + Duration::from_secs(1),
+            &mut s,
+        );
+        e.handle(
+            InputEvent::Released(Button::E1Push),
+            now + Duration::from_secs(1),
+            &mut s,
+        );
+        let c = click(&mut e, &mut s);
+        let Command::RxVolume { trx: 0, db } = c[0] else {
+            panic!("{c:?}")
+        };
+        assert_eq!(rx_volume_pct(db), 81);
+        e.handle(
+            InputEvent::Pressed(Button::E1Push),
+            now + Duration::from_secs(2),
+            &mut s,
+        );
+        e.handle(
+            InputEvent::Released(Button::E1Push),
+            now + Duration::from_secs(2),
+            &mut s,
+        );
+        assert_eq!(
+            click(&mut e, &mut s),
+            vec![Command::TuneDrive { trx: 0, pct: 29 }]
+        );
+    }
+
+    #[test]
+    fn rx_volume_matches_thetis_every_step() {
+        assert_eq!(rx_volume_pct(-6.02), 50);
+        assert_eq!(rx_volume_pct(-1.94), 80);
+        for pct in 0..=100 {
+            let db = rx_volume_db(pct);
+            // Thetis truncates 10^(dB/20) x 100 to a whole number.
+            let thetis = (10f64.powf(db as f64 / 20.0) * 100.0) as i32;
+            let want = if pct == 0 { 0 } else { pct };
+            assert_eq!(thetis, want, "{pct}% -> {db} dB");
+            assert_eq!(rx_volume_pct(db), want);
+        }
     }
 }

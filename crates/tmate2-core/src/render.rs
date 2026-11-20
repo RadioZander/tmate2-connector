@@ -2,7 +2,7 @@
 
 use tmate2_hid::{OutputReport, SegmentMap};
 
-use crate::config::{DisplayConfig, KnobFunction, Readout};
+use crate::config::{DisplayConfig, KnobFunction, Readout, TxMeter, TxReadout};
 use crate::engine::View;
 use crate::state::{Mode, RadioState};
 
@@ -46,6 +46,34 @@ pub fn s_units_text(dbm: f32) -> String {
     match bars_for_dbm(dbm) {
         n @ 0..=9 => n.to_string(),
         n => format!("+{}", (n - 9) * 10),
+    }
+}
+
+/// Bars (of 15) for transmit power, 0 W to `max_w`.
+pub fn bars_for_power(w: f32, max_w: u32) -> usize {
+    ((w / max_w.max(1) as f32) * 15.0).round().clamp(0.0, 15.0) as usize
+}
+
+/// Bars (of 15) for SWR, laid out like the S scale: 1:1 is none, 1.8:1 (the
+/// usual safe limit) is the S9 bar, and the six bars above S9 run to 3:1.
+pub fn bars_for_swr(swr: f32) -> usize {
+    let swr = swr.max(1.0);
+    let bars = if swr <= 1.8 {
+        (swr - 1.0) / 0.8 * 9.0
+    } else {
+        9.0 + (swr - 1.8) / 1.2 * 6.0
+    };
+    bars.round().clamp(0.0, 15.0) as usize
+}
+
+/// SWR on the 3-digit readout, which has no decimal point: the middle digit's
+/// bottom bar stands in for it, so 1.2:1 is "1_2". 10:1 and worse is "Hi".
+pub fn swr_text(swr: f32) -> String {
+    let tenths = (swr.max(1.0) * 10.0).round() as u32;
+    if tenths >= 100 {
+        "Hi".to_string()
+    } else {
+        format!("{}_{}", tenths / 10, tenths % 10)
     }
 }
 
@@ -126,21 +154,46 @@ pub fn render(
     if trx.nb {
         on("left.nb");
     }
+    // Knob labels. Functions without a label of their own light only E1 / E2.
     on("e1");
-    on(&format!("e1.{}", view.e1.name()));
+    if view.e1.has_lcd_label() {
+        on(&format!("e1.{}", view.e1.name()));
+    }
     on("e2");
     match view.e2 {
         KnobFunction::Width => {
             on("e2.high");
             on("e2.low");
         }
-        f => on(&format!("e2.{}", f.name())),
+        f if f.has_lcd_label() => on(&format!("e2.{}", f.name())),
+        _ => {}
+    }
+
+    on("bar.line");
+    if transmitting {
+        // Transmit meter: no S scale, the bargraph shows power or SWR.
+        let bars = match cfg.tx_meter {
+            TxMeter::Power => trx.tx_power_w.map(|w| bars_for_power(w, cfg.tx_power_max_w)),
+            TxMeter::Swr => trx.tx_swr.map(bars_for_swr),
+            TxMeter::Off => None,
+        };
+        for i in 1..=bars.unwrap_or(0) {
+            on(&format!("bar.{i}"));
+        }
+        match (cfg.tx_readout, trx.tx_power_w, trx.tx_swr) {
+            (TxReadout::Watts, Some(w), _) => {
+                on("unit.w");
+                map.draw_text(out, "smeter", &(w.round() as u32).min(999).to_string());
+            }
+            (TxReadout::Swr, _, Some(swr)) => map.draw_text(out, "smeter", &swr_text(swr)),
+            _ => {}
+        }
+        return;
     }
 
     // S-meter: bar graph, fixed scale, small readout.
-    on("bar.line");
     SCALE.iter().for_each(|n| on(n));
-    if let (Some(dbm), false) = (trx.rx_dbm, transmitting) {
+    if let Some(dbm) = trx.rx_dbm {
         for i in 1..=bars_for_dbm(dbm) {
             on(&format!("bar.{i}"));
         }
@@ -233,19 +286,53 @@ mod tests {
     }
 
     #[test]
-    fn transmit_turns_backlight_red_and_hides_meter() {
+    fn transmit_shows_power_without_the_s_scale() {
         let map = SegmentMap::builtin();
-        let cfg = Config::default();
+        let mut cfg = Config::default();
         let mut s = RadioState {
             connected: true,
             ..Default::default()
         };
-        s.trx_mut(0).tx = true;
-        s.trx_mut(0).rx_dbm = Some(-50.0);
+        let t = s.trx_mut(0);
+        t.tx = true;
+        t.rx_dbm = Some(-50.0);
+        t.tx_power_w = Some(52.4);
+        t.tx_swr = Some(1.24);
         let mut out = OutputReport::default();
         render(&s, &view(), &cfg.display, &map, &mut out);
+        let lit = |out: &OutputReport, n: &str| out.segment(map.get(n).unwrap());
         assert_eq!(out.rgb(), (255, 0, 0));
-        assert!(out.segment(map.get("tx").unwrap()));
-        assert!(!out.segment(map.get("bar.1").unwrap()));
+        assert!(lit(&out, "tx") && lit(&out, "unit.w"));
+        // 52 W of 100: 8 of 15 bars.
+        assert!(lit(&out, "bar.8") && !lit(&out, "bar.9"));
+        for n in ["scale.s", "scale.9", "scale.60", "unit.dbm", "smeter.minus"] {
+            assert!(!lit(&out, n), "{n} should be off on transmit");
+        }
+
+        cfg.display.tx_meter = TxMeter::Swr;
+        cfg.display.tx_readout = TxReadout::Swr;
+        render(&s, &view(), &cfg.display, &map, &mut out);
+        // SWR 1.24: 3 bars; readout 1_2 without the W unit.
+        assert!(lit(&out, "bar.3") && !lit(&out, "bar.4"));
+        assert!(!lit(&out, "unit.w"));
+        assert!(lit(&out, "smeter.3.b") && lit(&out, "smeter.2.d") && !lit(&out, "smeter.2.g"));
+    }
+
+    #[test]
+    fn tx_meter_scales() {
+        assert_eq!(bars_for_power(0.0, 100), 0);
+        assert_eq!(bars_for_power(100.0, 100), 15);
+        assert_eq!(bars_for_power(150.0, 100), 15);
+        assert_eq!(bars_for_power(5.0, 10), 8);
+        assert_eq!(bars_for_swr(1.0), 0);
+        assert_eq!(bars_for_swr(1.5), 6);
+        assert_eq!(bars_for_swr(1.8), 9, "1.8:1 sits at S9");
+        assert_eq!(bars_for_swr(2.0), 10);
+        assert_eq!(bars_for_swr(3.0), 15);
+        assert_eq!(bars_for_swr(3.5), 15);
+        assert_eq!(swr_text(1.0), "1_0");
+        assert_eq!(swr_text(1.24), "1_2");
+        assert_eq!(swr_text(2.96), "3_0");
+        assert_eq!(swr_text(12.0), "Hi");
     }
 }

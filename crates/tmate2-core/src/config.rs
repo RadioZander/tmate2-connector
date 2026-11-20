@@ -82,7 +82,59 @@ pub struct DisplayConfig {
     pub flash_ms: u64,
     #[serde(default)]
     pub volume_scale: VolumeScale,
+    /// What the bargraph shows while transmitting.
+    #[serde(default)]
+    pub tx_meter: TxMeter,
+    /// What the small readout shows while transmitting.
+    #[serde(default)]
+    pub tx_readout: TxReadout,
+    /// Power that fills the bargraph, in W.
+    #[serde(default = "default_tx_power_max_w")]
+    pub tx_power_max_w: u32,
 }
+
+fn default_tx_power_max_w() -> u32 {
+    100
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TxMeter {
+    /// Peak forward power, 0 to `tx_power_max_w`.
+    #[default]
+    Power,
+    /// SWR: 1.8:1 at the S9 bar, 3:1 fills it.
+    Swr,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TxReadout {
+    /// Peak power in W, with the W unit lit.
+    #[default]
+    Watts,
+    /// SWR to one decimal, e.g. 1_2 for 1.2:1.
+    Swr,
+    Off,
+}
+
+/// Backlight presets (name, colour): the GUI's swatches and `backlight_next`.
+pub const BACKLIGHT_PRESETS: [(&str, [u8; 3]); 8] = [
+    ("White", [255, 255, 255]),
+    ("Warm white", [255, 180, 90]),
+    ("Amber", [255, 120, 0]),
+    ("Red", [255, 0, 0]),
+    ("Green", [0, 255, 0]),
+    ("Cyan", [0, 255, 255]),
+    ("Blue", [0, 0, 255]),
+    ("Rich purple", [140, 0, 255]),
+];
+
+/// AGC modes TCI knows, for `agc:<mode>`.
+pub const AGC_MODES: [&str; 6] = ["off", "long", "slow", "normal", "fast", "custom"];
+/// Modes stepped through by `agc_next`.
+pub const AGC_CYCLE: [&str; 4] = ["long", "slow", "normal", "fast"];
 
 /// How E1 VOL shows and steps the master volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -113,6 +165,13 @@ pub struct TuningConfig {
     pub filter_step_hz: i32,
     pub rit_step_hz: i32,
     pub mode_cycle: Vec<String>,
+    /// Step multiplier while `fast` is on.
+    #[serde(default = "default_fast_multiplier")]
+    pub fast_multiplier: u64,
+}
+
+fn default_fast_multiplier() -> u64 {
+    10
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -220,10 +279,20 @@ pub enum KnobFunction {
     Shift,
     Rit,
     Xit,
+    // Functions with no LCD label of their own: only the value flashed on
+    // the main display shows what the knob is doing.
+    /// TX monitor volume.
+    MonVol,
+    /// CW keyer speed.
+    CwSpeed,
+    /// Drive used while tuning.
+    TuneDrive,
+    /// The controlled receiver's own volume (Thetis RX1 / RX2 AF).
+    RxVol,
 }
 
 impl KnobFunction {
-    pub const ALL: [KnobFunction; 13] = [
+    pub const ALL: [KnobFunction; 17] = [
         KnobFunction::Vol,
         KnobFunction::Sql,
         KnobFunction::Rfg,
@@ -237,7 +306,23 @@ impl KnobFunction {
         KnobFunction::Shift,
         KnobFunction::Rit,
         KnobFunction::Xit,
+        KnobFunction::MonVol,
+        KnobFunction::CwSpeed,
+        KnobFunction::TuneDrive,
+        KnobFunction::RxVol,
     ];
+
+    /// Functions without a label on the LCD's bottom row.
+    pub const UNLABELLED: [KnobFunction; 4] = [
+        KnobFunction::MonVol,
+        KnobFunction::CwSpeed,
+        KnobFunction::TuneDrive,
+        KnobFunction::RxVol,
+    ];
+
+    pub fn has_lcd_label(self) -> bool {
+        !Self::UNLABELLED.contains(&self)
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -254,6 +339,10 @@ impl KnobFunction {
             KnobFunction::Shift => "shift",
             KnobFunction::Rit => "rit",
             KnobFunction::Xit => "xit",
+            KnobFunction::MonVol => "mon_vol",
+            KnobFunction::CwSpeed => "cw_speed",
+            KnobFunction::TuneDrive => "tune_drive",
+            KnobFunction::RxVol => "rx_vol",
         }
     }
 }
@@ -280,20 +369,51 @@ pub enum Action {
     Mode(String),
     VfoToggle,
     VfoAToB,
+    VfoBToA,
     VfoSwap,
+    /// Main knob uses the step times `tuning.fast_multiplier` (on/off).
+    Fast,
+    /// Second receiver on/off.
+    Rx2,
+    /// Sub-receiver (second channel) of the controlled receiver on/off.
+    SubRx,
+    /// Knobs and display follow the other receiver (RX1 <-> RX2).
+    KnobRx2,
+    FilterDefault,
+    FilterWider,
+    FilterNarrower,
     Split,
     Rit,
     Xit,
+    /// Clear the RIT offset.
     RitClear,
+    /// Clear the XIT offset.
+    XitClear,
+    /// Clear both offsets.
+    RitXitClear,
     Lock,
     Mute,
+    Rx1Mute,
+    Rx2Mute,
     Nr,
     Nb,
     Anf,
     Notch,
+    Squelch,
+    AgcNext,
+    /// Set an AGC mode (one of [`AGC_MODES`]).
+    Agc(String),
+    Apf,
+    Binaural,
+    Monitor,
     Tune,
+    /// Tune carrier only while the button is held.
+    TuneHold,
     Mox,
     Ptt,
+    Power,
+    Focus,
+    BacklightNext,
     StepNext,
     StepPrev,
     E1Next,
@@ -311,20 +431,41 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("mode_prev", Action::ModePrev),
     ("vfo_toggle", Action::VfoToggle),
     ("vfo_a_to_b", Action::VfoAToB),
+    ("vfo_b_to_a", Action::VfoBToA),
     ("vfo_swap", Action::VfoSwap),
+    ("fast", Action::Fast),
+    ("rx2", Action::Rx2),
+    ("sub_rx", Action::SubRx),
+    ("knob_rx2", Action::KnobRx2),
+    ("filter_default", Action::FilterDefault),
+    ("filter_wider", Action::FilterWider),
+    ("filter_narrower", Action::FilterNarrower),
     ("split", Action::Split),
     ("rit", Action::Rit),
     ("xit", Action::Xit),
     ("rit_clear", Action::RitClear),
+    ("xit_clear", Action::XitClear),
+    ("rit_xit_clear", Action::RitXitClear),
     ("lock", Action::Lock),
     ("mute", Action::Mute),
+    ("rx1_mute", Action::Rx1Mute),
+    ("rx2_mute", Action::Rx2Mute),
     ("nr", Action::Nr),
     ("nb", Action::Nb),
     ("anf", Action::Anf),
     ("notch", Action::Notch),
+    ("squelch", Action::Squelch),
+    ("agc_next", Action::AgcNext),
+    ("apf", Action::Apf),
+    ("binaural", Action::Binaural),
+    ("monitor", Action::Monitor),
     ("tune", Action::Tune),
+    ("tune_hold", Action::TuneHold),
     ("mox", Action::Mox),
     ("ptt", Action::Ptt),
+    ("power", Action::Power),
+    ("focus", Action::Focus),
+    ("backlight_next", Action::BacklightNext),
     ("step_next", Action::StepNext),
     ("step_prev", Action::StepPrev),
     ("e1_next", Action::E1Next),
@@ -344,6 +485,14 @@ impl FromStr for Action {
         if let Some(mode) = t.strip_prefix("mode:") {
             return Ok(Action::Mode(mode.trim().to_ascii_uppercase()));
         }
+        if let Some(agc) = t.strip_prefix("agc:") {
+            let agc = agc.trim().to_ascii_lowercase();
+            return if AGC_MODES.contains(&agc.as_str()) {
+                Ok(Action::Agc(agc))
+            } else {
+                Err(unknown("AGC mode", &agc, AGC_MODES.into_iter()))
+            };
+        }
         let lower = t.to_ascii_lowercase();
         SIMPLE_ACTIONS
             .iter()
@@ -356,7 +505,7 @@ impl FromStr for Action {
                     SIMPLE_ACTIONS
                         .iter()
                         .map(|(n, _)| *n)
-                        .chain(["mode:USB", "raw:..."]),
+                        .chain(["mode:USB", "agc:fast", "raw:..."]),
                 )
             })
     }
@@ -388,6 +537,10 @@ impl Action {
                 | Action::ModePrev
                 | Action::BandUp
                 | Action::BandDown
+                | Action::FilterWider
+                | Action::FilterNarrower
+                | Action::AgcNext
+                | Action::BacklightNext
         )
     }
 }
@@ -396,6 +549,7 @@ impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Action::Mode(m) => write!(f, "mode:{m}"),
+            Action::Agc(m) => write!(f, "agc:{m}"),
             Action::Raw(r) => write!(f, "raw:{r}"),
             a => {
                 let name = SIMPLE_ACTIONS
@@ -461,6 +615,12 @@ impl Config {
                 t.step_hz
             ));
         }
+        if self.display.tx_power_max_w < 1 {
+            return bad("display.tx_power_max_w must be at least 1".into());
+        }
+        if t.fast_multiplier < 1 {
+            return bad("tuning.fast_multiplier must be at least 1".into());
+        }
         if t.counts_per_detent < 1 {
             return bad("tuning.counts_per_detent must be at least 1".into());
         }
@@ -521,6 +681,19 @@ mod tests {
             Ok(Action::Raw("trx:0,true;".into()))
         );
         assert_eq!(Action::VfoAToB.to_string(), "vfo_a_to_b");
+        assert_eq!("agc:Fast".parse::<Action>(), Ok(Action::Agc("fast".into())));
+        assert_eq!(Action::Agc("slow".into()).to_string(), "agc:slow");
+        assert!("agc:quick".parse::<Action>().is_err());
+    }
+
+    #[test]
+    fn every_simple_action_and_knob_function_round_trips() {
+        for a in Action::simple() {
+            assert_eq!(a.to_string().parse::<Action>().as_ref(), Ok(a));
+        }
+        for f in KnobFunction::ALL {
+            assert_eq!(KnobFunction::try_from(f.name().to_string()), Ok(f));
+        }
     }
 
     #[test]

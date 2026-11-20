@@ -107,6 +107,7 @@ async fn serve(
                                 s.protocol.as_deref().unwrap_or("unknown protocol")
                             );
                             out.extend(tci::encode(&Command::EnableMeters));
+                            out.extend(tci::encode(&Command::EnableTxMeters));
                             if cfg.tcix != TcixMode::Off {
                                 out.push("tcix:1.0;".into());
                                 tcix_deadline = Some(tokio::time::Instant::now() + TCIX_TIMEOUT);

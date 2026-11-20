@@ -91,8 +91,58 @@ pub enum Command {
         trx: usize,
         on: bool,
     },
+    AgcMode {
+        trx: usize,
+        /// off, long, slow, normal, fast or custom.
+        mode: String,
+    },
+    /// Switch a receiver on or off (the first is always on).
+    RxEnable {
+        trx: usize,
+        on: bool,
+    },
+    /// Switch the second channel (sub-receiver) of a receiver on or off.
+    SubRx {
+        trx: usize,
+        on: bool,
+    },
+    Apf {
+        trx: usize,
+        on: bool,
+    },
+    Binaural {
+        trx: usize,
+        on: bool,
+    },
+    /// Mute one receiver.
+    RxMute {
+        trx: usize,
+        on: bool,
+    },
+    /// One receiver's volume in dB (main channel).
+    RxVolume {
+        trx: usize,
+        db: f32,
+    },
+    Monitor(bool),
+    /// Monitor volume in dB (-60 .. 0).
+    MonVolume {
+        db: f32,
+    },
+    /// CW keyer speed in words per minute.
+    CwSpeed(u32),
+    TuneDrive {
+        trx: usize,
+        pct: u8,
+    },
+    /// Start (true) or stop the radio.
+    Power(bool),
+    /// Bring the control software's window to the front.
+    Focus,
     /// Ask for periodic signal-strength reports.
     EnableMeters,
+    /// Ask for periodic transmit power / SWR reports.
+    EnableTxMeters,
     /// Protocol-specific text passed through unchanged (escape hatch).
     Raw(String),
 }
@@ -123,7 +173,23 @@ impl RadioState {
             Command::Lock { trx, on } => self.trx_mut(trx).lock = on,
             Command::Mox { trx, on } => self.trx_mut(trx).tx = on,
             Command::Tune { trx, on } => self.trx_mut(trx).tune = on,
-            Command::Vfo { .. } | Command::EnableMeters | Command::Raw(_) => {}
+            Command::AgcMode { trx, ref mode } => self.trx_mut(trx).agc_mode = Some(mode.clone()),
+            Command::RxEnable { trx, on } => self.trx_mut(trx).rx_enable = on,
+            Command::SubRx { trx, on } => self.trx_mut(trx).sub_rx = on,
+            Command::Apf { trx, on } => self.trx_mut(trx).apf = on,
+            Command::Binaural { trx, on } => self.trx_mut(trx).binaural = on,
+            Command::RxMute { trx, on } => self.trx_mut(trx).rx_mute = on,
+            Command::RxVolume { trx, db } => self.trx_mut(trx).rx_volume_db = Some(db),
+            Command::Monitor(on) => self.monitor = on,
+            Command::MonVolume { db } => self.mon_volume_db = Some(db),
+            Command::CwSpeed(wpm) => self.cw_speed = Some(wpm),
+            Command::TuneDrive { trx, pct } => self.trx_mut(trx).tune_drive = Some(pct),
+            Command::Power(on) => self.power = Some(on),
+            Command::Vfo { .. }
+            | Command::Focus
+            | Command::EnableMeters
+            | Command::EnableTxMeters
+            | Command::Raw(_) => {}
         }
     }
 }

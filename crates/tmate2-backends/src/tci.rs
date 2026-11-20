@@ -99,6 +99,14 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
                 state.trx_mut(t).rx_dbm = Some(dbm);
             }
         }
+        // tx_sensors:trx,mic_dBm,power_W,peak_W,swr
+        "tx_sensors" => {
+            if let (Some(t), Some(peak), Some(swr)) = (trx, f(3), f(4)) {
+                let x = state.trx_mut(t);
+                x.tx_power_w = Some(peak.max(0.0));
+                x.tx_swr = Some(swr.max(1.0));
+            }
+        }
         "rx_nr_enable" => set_trx_bool!(nr),
         "rx_nb_enable" => set_trx_bool!(nb),
         "rx_anf_enable" => set_trx_bool!(anf),
@@ -136,6 +144,45 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
             (Some(v), None) => state.trx_mut(0).drive = Some(v.clamp(0, 100) as u8),
             _ => {}
         },
+        "rx_enable" => set_trx_bool!(rx_enable),
+        "rx_apf_enable" => set_trx_bool!(apf),
+        "rx_bin_enable" => set_trx_bool!(binaural),
+        "rx_mute" => set_trx_bool!(rx_mute),
+        // rx_channel_enable:trx,channel,bool (channel 1 = sub-receiver)
+        "rx_channel_enable" => {
+            if let (Some(t), Some(1), Some(v)) = (trx, n(1), flag(2)) {
+                state.trx_mut(t).sub_rx = v;
+            }
+        }
+        // rx_volume:trx,channel,dB
+        "rx_volume" => {
+            if let (Some(t), Some(0), Some(v)) = (trx, n(1), f(2)) {
+                state.trx_mut(t).rx_volume_db = Some(v);
+            }
+        }
+        "agc_mode" => {
+            if let (Some(t), Some(mode)) = (trx, a.get(1)) {
+                state.trx_mut(t).agc_mode = Some(mode.to_ascii_lowercase());
+            }
+        }
+        "tune_drive" => {
+            if let (Some(t), Some(v)) = (trx, f(1)) {
+                state.trx_mut(t).tune_drive = Some(v.clamp(0.0, 100.0) as u8);
+            }
+        }
+        "mon_enable" => {
+            if let Some(v) = flag(0) {
+                state.monitor = v;
+            }
+        }
+        "mon_volume" => state.mon_volume_db = f(0),
+        "cw_keyer_speed" => {
+            if let Some(v) = n(0) {
+                state.cw_speed = Some(v.max(1) as u32);
+            }
+        }
+        "start" => state.power = Some(true),
+        "stop" => state.power = Some(false),
         "volume" => state.volume_db = f(0),
         "mute" => {
             if let Some(v) = flag(0) {
@@ -176,7 +223,21 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::Lock { trx, on } => format!("lock:{trx},{};", tf(*on)),
         Command::Mox { trx, on } => format!("trx:{trx},{};", tf(*on)),
         Command::Tune { trx, on } => format!("tune:{trx},{};", tf(*on)),
+        Command::AgcMode { trx, mode } => format!("agc_mode:{trx},{mode};"),
+        Command::RxEnable { trx, on } => format!("rx_enable:{trx},{};", tf(*on)),
+        Command::SubRx { trx, on } => format!("rx_channel_enable:{trx},1,{};", tf(*on)),
+        Command::Apf { trx, on } => format!("rx_apf_enable:{trx},{};", tf(*on)),
+        Command::Binaural { trx, on } => format!("rx_bin_enable:{trx},{};", tf(*on)),
+        Command::RxMute { trx, on } => format!("rx_mute:{trx},{};", tf(*on)),
+        Command::RxVolume { trx, db } => format!("rx_volume:{trx},0,{db:.2};"),
+        Command::Monitor(on) => format!("mon_enable:{};", tf(*on)),
+        Command::MonVolume { db } => format!("mon_volume:{db:.2};"),
+        Command::CwSpeed(wpm) => format!("cw_keyer_speed:{wpm};"),
+        Command::TuneDrive { trx, pct } => format!("tune_drive:{trx},{pct};"),
+        Command::Power(on) => if *on { "start;" } else { "stop;" }.to_string(),
+        Command::Focus => "set_in_focus;".to_string(),
         Command::EnableMeters => "rx_sensors_enable:true,200;".to_string(),
+        Command::EnableTxMeters => "tx_sensors_enable:true,200;".to_string(),
         Command::Raw(text) => {
             let t = text.trim();
             if t.ends_with(';') {
@@ -240,6 +301,26 @@ mod tests {
         assert_eq!(s.volume_db, Some(-42.0));
         assert!(t.rx_dbm.is_some_and(|d| (-70.0..-60.0).contains(&d)));
         assert!(!t.tx && !t.lock);
+        // Controls added for the extra button actions and knob functions.
+        assert_eq!(t.agc_mode.as_deref(), Some("off"));
+        assert_eq!(s.trx[1].agc_mode.as_deref(), Some("normal"));
+        assert!(t.rx_enable && !s.trx[1].rx_enable);
+        assert!(!t.sub_rx && !t.apf && !t.binaural && !t.rx_mute);
+        assert_eq!(t.rx_volume_db, Some(-1.94));
+        assert_eq!(t.tune_drive, Some(28));
+        assert_eq!(s.mon_volume_db, Some(-30.0));
+        assert_eq!(s.cw_speed, Some(22));
+        assert!(!s.monitor);
+        assert_eq!(s.power, Some(true));
+    }
+
+    #[test]
+    fn tx_sensors_give_peak_power_and_swr() {
+        let mut s = RadioState::default();
+        let m = parse("tx_sensors:0,-20.5,48.0,95.2,1.3;").unwrap();
+        assert!(apply(&mut s, &m, Instant::now()));
+        assert_eq!(s.trx[0].tx_power_w, Some(95.2));
+        assert_eq!(s.trx[0].tx_swr, Some(1.3));
     }
 
     #[test]
@@ -282,6 +363,32 @@ mod tests {
         );
         assert_eq!(encode(&Command::Volume { db: -58.17 }).unwrap(), "volume:-58.17;");
         assert_eq!(encode(&Command::Raw("trx:0,true".into())).unwrap(), "trx:0,true;");
+        let cases = [
+            (
+                Command::AgcMode {
+                    trx: 0,
+                    mode: "fast".into(),
+                },
+                "agc_mode:0,fast;",
+            ),
+            (Command::RxEnable { trx: 1, on: true }, "rx_enable:1,true;"),
+            (Command::SubRx { trx: 0, on: true }, "rx_channel_enable:0,1,true;"),
+            (Command::Apf { trx: 0, on: true }, "rx_apf_enable:0,true;"),
+            (Command::Binaural { trx: 0, on: false }, "rx_bin_enable:0,false;"),
+            (Command::RxMute { trx: 1, on: true }, "rx_mute:1,true;"),
+            (Command::RxVolume { trx: 0, db: -6.0 }, "rx_volume:0,0,-6.00;"),
+            (Command::Monitor(true), "mon_enable:true;"),
+            (Command::MonVolume { db: -30.0 }, "mon_volume:-30.00;"),
+            (Command::CwSpeed(25), "cw_keyer_speed:25;"),
+            (Command::TuneDrive { trx: 0, pct: 30 }, "tune_drive:0,30;"),
+            (Command::Power(true), "start;"),
+            (Command::Power(false), "stop;"),
+            (Command::Focus, "set_in_focus;"),
+            (Command::EnableTxMeters, "tx_sensors_enable:true,200;"),
+        ];
+        for (cmd, text) in cases {
+            assert_eq!(encode(&cmd).as_deref(), Some(text), "{cmd:?}");
+        }
     }
 
     #[test]

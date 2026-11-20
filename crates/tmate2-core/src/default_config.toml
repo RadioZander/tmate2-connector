@@ -32,6 +32,14 @@ flash_ms = 1500
 #   "percent" - 0 to 100, matching Thetis's Master AF (1 per click)
 #   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software
 volume_scale = "percent"
+# While transmitting, the S-meter scale is switched off and:
+#   tx_meter   (bargraph):     "power", "swr" (1.8:1 at S9, 3:1 full) or "off"
+#   tx_readout (small digits): "watts", "swr" or "off". The readout has no
+#     decimal point, so SWR shows as 1_2 for 1.2:1 (Hi from 10:1).
+tx_meter = "power"
+tx_readout = "watts"
+# Power in W that fills the bargraph (the ANAN-G2 is a 100 W radio).
+tx_power_max_w = 100
 
 [tuning]
 # Tuning steps for the main knob; the step digit is underlined on the LCD.
@@ -49,12 +57,20 @@ filter_step_hz = 50
 rit_step_hz = 10
 # Modes stepped through by mode_next / mode_prev.
 mode_cycle = ["LSB", "USB", "CWU", "AM", "FM", "DIGU"]
+# While the fast action is on, the main knob's step is multiplied by this.
+fast_multiplier = 10
 
 # The bottom row of the LCD shows what each knob is set to. Push the knob to
 # step through its functions (see e1_push / e2_push below).
 #   E1 can be: vol, sql, rfg, drv, nr, nb, an
 #   E2 can be: high, low, width, shift, rit, xit
 #   (width has no label of its own, so HIGH and LOW light together)
+# Either knob can also have these, which have no LCD label (only the value
+# shown on the main display tells you which one is selected):
+#   rx_vol     the controlled receiver's own volume (Thetis RX1 / RX2 AF)
+#   mon_vol    TX monitor volume
+#   cw_speed   CW keyer speed (WPM)
+#   tune_drive drive used while tuning
 # "start" is the function each knob is on when the connector starts.
 [e1]
 functions = ["vol", "sql", "rfg", "drv", "nr", "nb", "an"]
@@ -86,19 +102,42 @@ NFM = [-5500, 5500]
 # Use "none" for nothing. If hold is "none", tap fires as soon as the button
 # is pressed; otherwise tap fires on release (so the two can be told apart).
 # Stepping actions (step_next/prev, e1_next, e2_next, mode_next/prev,
-# band_up/down) used as hold keep repeating while the button stays down.
+# band_up/down, filter_wider/narrower, agc_next, backlight_next) used as hold
+# keep repeating while the button stays down.
 #
 # Actions:
-#   band_up  band_down  mode_next  mode_prev  mode:USB (any mode name)
-#   vfo_toggle (main knob tunes A or B)  vfo_a_to_b  vfo_swap
-#   split  rit  xit  rit_clear  lock  mute
-#   nr  nb  anf (automatic notch)  notch (manual notch filter)
-#   mox (transmit on/off!)  ptt (transmit only while the button is held)
-#   tune (tune carrier on/off)
-#   step_next  step_prev
-#   e1_next  e2_next  e1_toggle  e2_toggle   (toggle = on/off for the
-#     knob's current function; for the filter functions it restores the
-#     mode's default filter from [filters])
+#   Frequency and VFO
+#     band_up  band_down
+#     vfo_toggle (main knob tunes A or B)  vfo_a_to_b  vfo_b_to_a  vfo_swap
+#     step_next  step_prev
+#     fast       main knob step x fast_multiplier, on/off
+#     rx2        second receiver on/off
+#     sub_rx     sub-receiver (second channel) on/off
+#     knob_rx2   knobs and display control the other receiver (RX1 <-> RX2)
+#   Mode and filter
+#     mode_next  mode_prev  mode:USB (any mode name)
+#     filter_default  (the mode's filter from [filters])
+#     filter_wider  filter_narrower  (by filter_step_hz)
+#   Receiver
+#     nr  nb  anf (automatic notch)  notch (manual notch filter)
+#     squelch (on/off)  apf (audio peak filter)  binaural
+#     agc_next (long, slow, normal, fast)
+#     agc:fast (off, long, slow, normal, fast or custom)
+#   Audio
+#     mute (master)  rx1_mute  rx2_mute  monitor (TX monitor on/off)
+#   Transmit
+#     mox (transmit on/off!)  ptt (transmit only while the button is held)
+#     tune (tune carrier on/off)  tune_hold (tune only while held)
+#   RIT / XIT
+#     split  rit  xit  rit_clear  xit_clear  rit_xit_clear  lock
+#   Knobs
+#     e1_next  e2_next  e1_toggle  e2_toggle   (toggle = on/off for the
+#       knob's current function; for the filter functions it restores the
+#       mode's default filter from [filters])
+#   Radio and connector
+#     power (start / stop the radio)  focus (bring the radio software's
+#     window to the front)  backlight_next (cycle the backlight presets
+#     until the next restart or settings change)
 #   raw:<text>   sends <text> to the radio unchanged, e.g. raw:trx:0,true;
 #   none
 [buttons]

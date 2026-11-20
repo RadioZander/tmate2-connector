@@ -52,7 +52,6 @@ screen. The first run writes a commented configuration file and logs where.
 ## Roadmap
 
 - CAT backends: PowerSDR / Thetis ZZ, Kenwood, Elecraft, Icom CI-V
-- A much larger list of actions available to the buttons
 - piHPSDR on the ANAN-G2's internal Raspberry Pi (headless service)
 - Emulation of the original ELAD HMI serial output (Perseus / PowerSDR)
 - Installers / packages (Windows installer, .deb for the Pi)
