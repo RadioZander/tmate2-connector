@@ -282,7 +282,11 @@ impl App {
                     ui.separator();
                     ui.label(match &radio.control {
                         _ if radio.in_control() => "Control: you".to_string(),
-                        Some(op) => format!("Control: {op} (you're watching)"),
+                        // Only a login of our own tells us we aren't the
+                        // operator: through a relay (KADRAD's) we act
+                        // under its login, which may be this one.
+                        Some(op) if radio.login_user.is_some() => format!("Control: {op} (you're watching)"),
+                        Some(op) => format!("Control: {op}"),
                         None => "Control: nobody".to_string(),
                     });
                 }
