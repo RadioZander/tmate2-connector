@@ -270,12 +270,38 @@ impl App {
                 ));
                 ui.separator();
                 ui.label(match &radio.tcix {
-                    Some(caps) => format!("TCI-X: yes ({} capabilities)", caps.len()),
+                    Some(m) => format!("TCI-X: yes ({} capabilities)", m.len()),
                     None if r.tcix == TcixMode::Off => "TCI-X: off".into(),
                     None => "TCI-X: not offered".into(),
                 });
+                if let (Some(user), Some(role)) = (&radio.login_user, &radio.role) {
+                    ui.separator();
+                    ui.label(format!("Logged in: {user} ({role})"));
+                }
+                if radio.has_tcix("control_request") {
+                    ui.separator();
+                    ui.label(match &radio.control {
+                        _ if radio.in_control() => "Control: you".to_string(),
+                        // Only a login of our own tells us we aren't the
+                        // operator: through a relay (KADRAD's) we act
+                        // under its login, which may be this one.
+                        Some(op) if radio.login_user.is_some() => format!("Control: {op} (you're watching)"),
+                        Some(op) => format!("Control: {op}"),
+                        None => "Control: nobody".to_string(),
+                    });
+                }
             } else {
-                ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port));
+                match radio.notice.as_deref() {
+                    Some("login") => ui.label(format!(
+                        "Radio: {}:{} needs a TCI-X login (see the log)",
+                        r.host, r.port
+                    )),
+                    Some("idle") => ui.label(format!(
+                        "Radio: {}:{} closed the connection after the idle time; touch the TMATE-2 to reconnect",
+                        r.host, r.port
+                    )),
+                    _ => ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port)),
+                };
             }
         });
     }

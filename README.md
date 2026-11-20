@@ -24,7 +24,7 @@ Early development. What exists today:
 | `tmate2-hid` driver (input reports, encoders, buttons, LCD, backlight, LEDs) | working; input, output and the full LCD map confirmed on HW1.1 / FW1.5 |
 | `tmate2-probe` bring-up tool | working |
 | `tmate2` connector: mapping engine, commented TOML config, LCD renderer | working (headless) |
-| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis |
+| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis. With TCI-X it sends only what the server's manifest lists, uses its extensions (AF / RF gain, squelch, filter presets, band stack, dial lock, notch, tuner) and skips knob functions the radio can't do. Logs in when the server asks (TCI-X §4.3), takes part in its one-operator control (§4.4: a `control` button action, refusals flashed on the LCD, no reconnecting by itself after an idle close). Modes go by the server's own names, VOL uses the server's `volume` where it lists one (KADRAD's relay) and the radio's AF gain otherwise, and the ATT, PRE, ANT, LP and ERR lamps follow the radio. Tried on an Icom IC-7100 on kadrad-hub, directly and through KADRAD's relay (HW1.1 / FW1.3); login and control only against a fake server in the tests |
 | CAT backends, HMI emulation, GUI, packaging | planned |
 
 See [docs/hardware-bringup.md](docs/hardware-bringup.md) to help confirm the

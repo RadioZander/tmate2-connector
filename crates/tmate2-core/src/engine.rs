@@ -5,13 +5,17 @@ use std::time::{Duration, Instant};
 
 use tmate2_hid::{Button, Encoder, InputEvent};
 
-use crate::bands::{band_of, step_band, BANDS};
+use crate::bands::{band_of, step_band, step_in_list, BANDS};
 use crate::command::Command;
 use crate::config::{Action, Config, KnobFunction, VolumeScale};
 use crate::state::{Mode, RadioState};
 
 /// How long VFO echoes from the radio are ignored after local tuning.
 const VFO_GUARD: Duration = Duration::from_millis(400);
+/// The same for a value set with E1 or E2 (AF gain, filter width, …), at
+/// the longest: it ends as soon as the radio reports the value we hold. A
+/// radio on a serial link can be half a second behind a fast-turned knob.
+const KNOB_GUARD: Duration = Duration::from_millis(1500);
 /// Window for measuring main-knob speed (acceleration).
 const ACCEL_WINDOW: Duration = Duration::from_millis(100);
 
@@ -75,6 +79,8 @@ pub struct Engine {
     band_mem: Vec<Option<u64>>,
     recent: VecDeque<(Instant, i32)>,
     flash: Option<(String, Instant)>,
+    /// The last `RadioState::alert_seq` shown.
+    alert_seen: u64,
 }
 
 impl Engine {
@@ -97,6 +103,7 @@ impl Engine {
             band_mem: vec![None; BANDS.len()],
             recent: VecDeque::new(),
             flash: None,
+            alert_seen: 0,
         }
     }
 
@@ -144,6 +151,22 @@ impl Engine {
         list[self.e_idx[knob] % list.len()]
     }
 
+    /// Move knob `k` on to its next function the radio can do. Leaves it
+    /// where it is if none of them can be done.
+    fn next_function(&mut self, k: usize, state: &RadioState) {
+        let len = if k == 0 {
+            self.cfg.e1.functions.len()
+        } else {
+            self.cfg.e2.functions.len()
+        };
+        for _ in 0..len {
+            self.e_idx[k] = self.e_idx[k].wrapping_add(1);
+            if available(self.function(k), state) {
+                return;
+            }
+        }
+    }
+
     pub fn view(&self, now: Instant) -> View {
         let flash_for = Duration::from_millis(self.cfg.display.flash_ms);
         View {
@@ -163,6 +186,9 @@ impl Engine {
     /// Handle one input event. Commands are also applied to `state` at once.
     pub fn handle(&mut self, ev: InputEvent, now: Instant, state: &mut RadioState) -> Vec<Command> {
         let mut out = Vec::new();
+        // Touching the controller is the user coming back after the server
+        // closed us for being idle (TCI-X §4.4): the client may reconnect.
+        state.idle_closed = false;
         match ev {
             InputEvent::Turned { encoder, delta } => {
                 self.last_turn[enc_index(encoder)] = Some(now);
@@ -222,6 +248,26 @@ impl Engine {
     /// auto-repeat hold actions.
     pub fn tick(&mut self, now: Instant, state: &mut RadioState) -> Vec<Command> {
         let mut out = Vec::new();
+        // A knob left on a function the radio can't do (e.g. after TCI-X
+        // negotiation) moves on to one it can.
+        for k in 0..2 {
+            if !available(self.function(k), state) {
+                self.next_function(k, state);
+            }
+        }
+        // Show each new alert (a refusal, a control request) once.
+        if state.alert_seq != self.alert_seen {
+            self.alert_seen = state.alert_seq;
+            if let Some(text) = &state.alert {
+                self.flash = Some((text.clone(), now));
+            }
+        }
+        // Follow the radio's own active VFO where it reports one.
+        if state.tcix_offers("vfo_select") {
+            if let Some(ch) = state.trx(self.trx()).and_then(|x| x.vfo_selected) {
+                self.active_vfo = ch.min(1);
+            }
+        }
         let hold = Duration::from_millis(self.cfg.buttons.hold_ms);
         let repeat = Duration::from_millis(self.cfg.buttons.hold_repeat_ms);
         let due: Vec<Button> = self
@@ -267,16 +313,23 @@ impl Engine {
     }
 
     fn emit(&self, cmd: Command, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
+        // With TCI-X, send only what the server's manifest takes.
+        if !state.allows(&cmd) {
+            return;
+        }
         state.apply(&cmd);
         if let Command::Vfo { trx, .. } = cmd {
             state.trx_mut(trx).vfo_guard_until = Some(now + VFO_GUARD);
+        }
+        if let (true, Some(name)) = (cmd.knob_value(), cmd.wire_name()) {
+            state.guard(name, now + KNOB_GUARD);
         }
         out.push(cmd);
     }
 
     fn tune(&mut self, delta: i32, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
         let t = self.trx();
-        if !state.connected || state.trx(t).is_none_or(|x| x.lock) {
+        if !state.connected || state.dial_lock || state.trx(t).is_none_or(|x| x.lock) {
             return;
         }
         // Acceleration from the number of counts in the last ACCEL_WINDOW.
@@ -328,6 +381,33 @@ impl Engine {
         let rs = self.cfg.tuning.rit_step_hz * d;
         let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
         let cmd = match f {
+            KnobFunction::Vol if radio_af_gain(state) => Some(Command::AfGain {
+                trx: t,
+                pct: (x.af_gain.unwrap_or(50) + d).clamp(0, 100),
+            }),
+            KnobFunction::Sql if state.tcix_offers("squelch") => Some(Command::SquelchKnob {
+                trx: t,
+                pct: (x.squelch.unwrap_or(0) + d).clamp(0, 100),
+            }),
+            KnobFunction::Rfg if state.tcix_offers("rf_gain") => Some(Command::RfGain {
+                trx: t,
+                pct: (x.rf_gain.unwrap_or(100) + d).clamp(0, 100),
+            }),
+            // A radio with named filter presets only: step through them, in
+            // the server's order.
+            KnobFunction::Width if uses_presets(state) => {
+                let list = presets(state);
+                let pos = x
+                    .filter_preset
+                    .as_ref()
+                    .and_then(|p| list.iter().position(|n| n.eq_ignore_ascii_case(p)))
+                    .unwrap_or(0) as i32;
+                let next = (pos + d).clamp(0, list.len() as i32 - 1);
+                (next != pos || x.filter_preset.is_none()).then(|| Command::FilterPreset {
+                    trx: t,
+                    name: list[next as usize].clone(),
+                })
+            }
             KnobFunction::Vol => {
                 let cur = state.volume_db.unwrap_or(-30.0);
                 let db = match self.cfg.display.volume_scale {
@@ -384,7 +464,8 @@ impl Engine {
                 hz: (x.xit_offset + rs).clamp(-9990, 9990),
             }),
         };
-        if let Some(c) = cmd {
+        // At the end of a knob's travel there is nothing new to send.
+        if let Some(c) = cmd.filter(|c| !state.holds(c)) {
             self.emit(c, now, state, out);
         }
         self.flash_value(f, now, state);
@@ -409,6 +490,22 @@ impl Engine {
         let x = state.trx_mut(t).clone();
         let av = self.active_vfo;
         let cmds: Vec<Command> = match a {
+            // The radio's own band key and band stack, where it offers one.
+            Action::BandUp | Action::BandDown if state.tcix_offers("band") => {
+                let list = state
+                    .tcix
+                    .as_ref()
+                    .and_then(|m| m.enum_values("band"))
+                    .unwrap_or_default();
+                let dir = if *a == Action::BandUp { 1 } else { -1 };
+                step_in_list(list, x.vfo[av], dir)
+                    .map(|i| Command::Band {
+                        trx: t,
+                        name: list[i].clone(),
+                    })
+                    .into_iter()
+                    .collect()
+            }
             Action::BandUp | Action::BandDown => {
                 let cur = x.vfo[av];
                 if let Some(b) = band_of(cur) {
@@ -426,14 +523,17 @@ impl Engine {
                     .iter()
                     .map(|m| Mode::from_name(m))
                     .collect();
-                if !state.modes.is_empty() {
-                    cycle.retain(|m| state.modes.contains(m));
-                }
+                cycle.retain(|m| state.offers_mode(*m));
                 if cycle.is_empty() {
                     vec![]
                 } else {
                     let n = cycle.len() as i32;
-                    let pos = x.mode.and_then(|m| cycle.iter().position(|c| *c == m));
+                    let pos = x.mode.and_then(|m| {
+                        cycle
+                            .iter()
+                            .position(|c| *c == m)
+                            .or_else(|| cycle.iter().position(|c| c.same_as(m)))
+                    });
                     let next = match (pos, *a == Action::ModeNext) {
                         (Some(p), true) => (p as i32 + 1).rem_euclid(n),
                         (Some(p), false) => (p as i32 - 1).rem_euclid(n),
@@ -449,10 +549,49 @@ impl Engine {
                 trx: t,
                 mode: Mode::from_name(name),
             }],
+            Action::VfoToggle if state.tcix_offers("vfo_select") => {
+                self.active_vfo ^= 1;
+                vec![Command::VfoSelect {
+                    trx: t,
+                    ch: self.active_vfo,
+                }]
+            }
             Action::VfoToggle => {
                 self.active_vfo ^= 1;
                 vec![]
             }
+            // The next of the radio's own settings, round again.
+            Action::Preamp | Action::Att => {
+                let (cap, cur) = match a {
+                    Action::Preamp => ("preamp", &x.preamp),
+                    _ => ("attenuator", &x.attenuator),
+                };
+                let list = state
+                    .tcix
+                    .as_ref()
+                    .filter(|m| m.writable(cap))
+                    .and_then(|m| m.enum_values(cap))
+                    .unwrap_or_default();
+                let at = cur
+                    .as_ref()
+                    .and_then(|c| list.iter().position(|v| v.eq_ignore_ascii_case(c)));
+                let next = at.map_or(0, |i| (i + 1) % list.len().max(1));
+                list.get(next)
+                    .map(|value| match a {
+                        Action::Preamp => Command::Preamp {
+                            trx: t,
+                            value: value.clone(),
+                        },
+                        _ => Command::Attenuator {
+                            trx: t,
+                            value: value.clone(),
+                        },
+                    })
+                    .into_iter()
+                    .collect()
+            }
+            Action::Control if state.in_control() => vec![Command::ControlRelease],
+            Action::Control => vec![Command::ControlRequest],
             Action::VfoAToB => vec![Command::Vfo {
                 trx: t,
                 vfo: 1,
@@ -477,12 +616,32 @@ impl Engine {
                 Command::RitOffset { trx: t, hz: 0 },
                 Command::XitOffset { trx: t, hz: 0 },
             ],
+            Action::Lock if state.tcix_offers("dial_lock") => vec![Command::DialLock(!state.dial_lock)],
             Action::Lock => vec![Command::Lock { trx: t, on: !x.lock }],
             Action::Mute => vec![Command::Mute(!state.mute)],
             Action::Nr => vec![Command::Nr { trx: t, on: !x.nr }],
             Action::Nb => vec![Command::Nb { trx: t, on: !x.nb }],
             Action::Anf => vec![Command::Anf { trx: t, on: !x.anf }],
+            // TCI-X's notch carries its frequency: keep the one the radio has.
+            Action::Notch if state.tcix_offers("notch") => x
+                .notch_hz
+                .map(|hz| Command::NotchAt {
+                    trx: t,
+                    on: !x.notch,
+                    hz,
+                })
+                .into_iter()
+                .collect(),
             Action::Notch => vec![Command::Notch { trx: t, on: !x.notch }],
+            // No carrier tune, but an antenna tuner: start a tune cycle, or
+            // stop transmitting if one is under way.
+            Action::Tune if !state.can_send("tune") && state.tcix_offers("atu_tune") => {
+                if x.tx {
+                    vec![Command::Mox { trx: t, on: false }]
+                } else {
+                    vec![Command::AtuTune { trx: t }]
+                }
+            }
             Action::Tune => vec![Command::Tune { trx: t, on: !x.tune }],
             Action::Mox => vec![Command::Mox { trx: t, on: !x.tx }],
             Action::StepNext | Action::StepPrev => {
@@ -493,7 +652,7 @@ impl Engine {
             }
             Action::E1Next | Action::E2Next => {
                 let k = if *a == Action::E1Next { 0 } else { 1 };
-                self.e_idx[k] = self.e_idx[k].wrapping_add(1);
+                self.next_function(k, state);
                 self.e_accum[k] = 0;
                 if state.connected {
                     self.flash_value(self.function(k), now, state);
@@ -540,6 +699,46 @@ impl Engine {
     }
 }
 
+/// Whether the radio can do what a knob function changes. Without TCI-X
+/// every function is offered, as before; with it, only those the manifest
+/// lets us change.
+pub fn available(f: KnobFunction, s: &RadioState) -> bool {
+    match f {
+        KnobFunction::Vol => s.can_send("volume") || s.tcix_offers("af_gain"),
+        KnobFunction::Sql => s.can_send("sql_level") || s.tcix_offers("squelch"),
+        KnobFunction::Rfg => s.can_send("agc_gain") || s.tcix_offers("rf_gain"),
+        KnobFunction::Drv => s.can_send("drive"),
+        KnobFunction::Nr => s.can_send("rx_nr_enable"),
+        KnobFunction::Nb => s.can_send("rx_nb_enable"),
+        KnobFunction::An => s.can_send("rx_anf_enable"),
+        KnobFunction::Width => s.can_send("rx_filter_band") || uses_presets(s),
+        KnobFunction::High | KnobFunction::Low | KnobFunction::Shift => s.can_send("rx_filter_band"),
+        KnobFunction::Rit => s.can_send("rit_offset"),
+        KnobFunction::Xit => s.can_send("xit_offset"),
+    }
+}
+
+/// VOL is the radio's own AF gain (TCI-X `af_gain`): where the server
+/// offers that and no `volume`. A server with a `volume` of its own is the
+/// program the operator listens through (KADRAD's relay), and VOL is that.
+fn radio_af_gain(s: &RadioState) -> bool {
+    s.tcix_offers("af_gain") && !s.tcix_offers("volume")
+}
+
+/// The radio has named filter presets (TCI-X `filter`) and no continuously
+/// adjustable passband.
+fn uses_presets(s: &RadioState) -> bool {
+    !s.can_send("rx_filter_band") && !presets(s).is_empty()
+}
+
+fn presets(s: &RadioState) -> &[String] {
+    s.tcix
+        .as_ref()
+        .filter(|m| m.writable("filter"))
+        .and_then(|m| m.enum_values("filter"))
+        .unwrap_or_default()
+}
+
 /// Master volume as the 0-100 Thetis shows: a straight line from -60 dB (0)
 /// to 0 dB (100).
 pub fn volume_pct(db: f32) -> i32 {
@@ -560,6 +759,18 @@ pub fn value_text(f: KnobFunction, state: &RadioState, trx: usize, volume: Volum
     let lsb = x.mode.is_some_and(Mode::is_lower_sideband);
     let num = |v: Option<i32>| v.map_or("--".to_string(), |v| v.to_string());
     let (label, value) = match f {
+        KnobFunction::Vol if radio_af_gain(state) => ("VOL", num(x.af_gain)),
+        KnobFunction::Sql if state.tcix_offers("squelch") => ("SQL", num(x.squelch)),
+        KnobFunction::Rfg if state.tcix_offers("rf_gain") => ("RFG", num(x.rf_gain)),
+        // Presets show as their place in the list, 1 first.
+        KnobFunction::Width if uses_presets(state) => (
+            "FIL",
+            num(x
+                .filter_preset
+                .as_ref()
+                .and_then(|p| presets(state).iter().position(|n| n.eq_ignore_ascii_case(p)))
+                .map(|i| i as i32 + 1)),
+        ),
         KnobFunction::Vol if state.mute => ("VOL", "off".to_string()),
         KnobFunction::Vol => (
             "VOL",
@@ -880,5 +1091,341 @@ mod tests {
                 high: -100
             }]
         );
+    }
+
+    /// A connected IC-7100 on kadrad-hub, as its TCI-X manifest describes it
+    /// (tci-x/examples/ic7100_tcix.txt, the lines that matter here): named
+    /// filter presets, no continuous passband, AF gain and squelch as 0-100,
+    /// no RF gain, lock, mute or volume.
+    fn ic7100(extra: &[&str]) -> RadioState {
+        let mut s = connected();
+        let mut m = crate::Manifest::default();
+        for line in [
+            "vfo,rw,range,30000,470000000,1,hz",
+            "modulation,rw,enum,lsb,usb,am,cw,cwr,rtty,rttyr,nfm,wfm,digl,digu,digfm,dv",
+            "trx,rw,bool",
+            "split_enable,rw,bool",
+            "drive,rw,range,0,100,1,pct",
+            "filter,rw,enum,fil1,fil2,fil3",
+            "rx_nb_enable,rw,bool",
+            "rx_nr_enable,rw,bool",
+            "rx_anf_enable,rw,bool",
+            "rit_offset,rw,range,-9999,9999,1,hz",
+            "af_gain,rw,range,0,100,1,pct",
+            "squelch,rw,range,0,100,1,pct",
+            "band,w,enum,160m,80m,40m,30m,20m,17m,15m,12m,10m,6m,2m,70cm",
+        ]
+        .iter()
+        .chain(extra)
+        {
+            let args: Vec<String> = line.split(',').map(str::to_string).collect();
+            assert!(m.apply(&args), "{line}");
+        }
+        s.tcix = Some(m);
+        let t = s.trx_mut(0);
+        t.filter_preset = Some("fil1".into());
+        t.af_gain = Some(30);
+        s
+    }
+
+    fn act(e: &mut Engine, a: Action, s: &mut RadioState) -> Vec<Command> {
+        let mut out = Vec::new();
+        e.action(&a, Instant::now(), s, &mut out);
+        out
+    }
+
+    #[test]
+    fn tcix_knobs_use_the_extensions() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let now = Instant::now();
+        // E1 VOL is the radio's AF gain.
+        assert_eq!(
+            e.handle(turn(Encoder::E1, 2), now, &mut s),
+            vec![Command::AfGain { trx: 0, pct: 31 }]
+        );
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL    31"));
+        // E2 WIDTH steps the filter presets, and stops at the last.
+        assert_eq!(
+            e.handle(turn(Encoder::E2, 2), now, &mut s),
+            vec![Command::FilterPreset {
+                trx: 0,
+                name: "fil2".into()
+            }]
+        );
+        assert_eq!(e.view(now).flash.as_deref(), Some("FIL     2"));
+        e.handle(turn(Encoder::E2, 4), now, &mut s);
+        assert_eq!(s.trx[0].filter_preset.as_deref(), Some("fil3"));
+        assert!(e.handle(turn(Encoder::E2, 2), now, &mut s).is_empty());
+    }
+
+    #[test]
+    fn tcix_knobs_skip_what_the_radio_cant_do() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let now = Instant::now();
+        assert!(!available(KnobFunction::Rfg, &s) && !available(KnobFunction::High, &s));
+        // E1 on RFG (no rf_gain) moves on to DRV; E2 on HIGH moves on to WIDTH.
+        e.e_idx = [2, 0];
+        e.tick(now, &mut s);
+        assert_eq!(
+            (e.view(now).e1, e.view(now).e2),
+            (KnobFunction::Drv, KnobFunction::Width)
+        );
+        // Stepping E2 from WIDTH skips SHIFT (no passband) to RIT, then XIT
+        // (not offered) back round to WIDTH.
+        act(&mut e, Action::E2Next, &mut s);
+        assert_eq!(e.view(now).e2, KnobFunction::Rit);
+        act(&mut e, Action::E2Next, &mut s);
+        assert_eq!(e.view(now).e2, KnobFunction::Width);
+        // Without TCI-X every function is offered, as before.
+        assert!(available(KnobFunction::Rfg, &connected()));
+    }
+
+    #[test]
+    fn tcix_sends_only_what_the_manifest_takes() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        assert!(act(&mut e, Action::Mute, &mut s).is_empty());
+        assert!(act(&mut e, Action::Lock, &mut s).is_empty());
+        assert!(act(&mut e, Action::Notch, &mut s).is_empty());
+        assert!(!s.mute && !s.trx[0].lock, "nothing applied either");
+        assert_eq!(
+            act(&mut e, Action::Mox, &mut s),
+            vec![Command::Mox { trx: 0, on: true }]
+        );
+        // Unkeying is never refused, even by a manifest without `trx`.
+        let mut bare = connected();
+        bare.tcix = Some(crate::Manifest::default());
+        assert!(bare.allows(&Command::Mox { trx: 0, on: false }));
+        assert!(!bare.allows(&Command::Mox { trx: 0, on: true }));
+    }
+
+    #[test]
+    fn tcix_band_keys_use_the_radio_band_stack() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        assert_eq!(
+            act(&mut e, Action::BandUp, &mut s),
+            vec![Command::Band {
+                trx: 0,
+                name: "17m".into()
+            }]
+        );
+        // The frequency is left for the radio to report.
+        assert_eq!(s.trx[0].vfo[0], 14_074_000);
+        s.trx[0].vfo[0] = 50_313_000;
+        assert_eq!(
+            act(&mut e, Action::BandUp, &mut s),
+            vec![Command::Band {
+                trx: 0,
+                name: "2m".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn tcix_lock_notch_and_tuner() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[
+            "dial_lock,rw,bool",
+            "notch,rw,range,-1040,4040,1,hz",
+            "atu_tune,w,action",
+        ]);
+        let now = Instant::now();
+        assert_eq!(act(&mut e, Action::Lock, &mut s), vec![Command::DialLock(true)]);
+        assert!(
+            e.handle(turn(Encoder::Main, 1), now, &mut s).is_empty(),
+            "dial locked"
+        );
+        // No notch frequency known yet: nothing to send.
+        assert!(act(&mut e, Action::Notch, &mut s).is_empty());
+        s.trx[0].notch_hz = Some(1200);
+        assert_eq!(
+            act(&mut e, Action::Notch, &mut s),
+            vec![Command::NotchAt {
+                trx: 0,
+                on: true,
+                hz: 1200
+            }]
+        );
+        assert_eq!(
+            act(&mut e, Action::Tune, &mut s),
+            vec![Command::AtuTune { trx: 0 }]
+        );
+        s.trx[0].tx = true;
+        assert_eq!(
+            act(&mut e, Action::Tune, &mut s),
+            vec![Command::Mox { trx: 0, on: false }]
+        );
+    }
+
+    #[test]
+    fn alerts_flash_once() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let t0 = Instant::now();
+        s.push_alert("busy");
+        e.tick(t0, &mut s);
+        assert_eq!(e.view(t0).flash.as_deref(), Some("busy"));
+        // Gone after flash_ms, and not shown again by later ticks.
+        let later = t0 + Duration::from_secs(5);
+        e.tick(later, &mut s);
+        assert_eq!(e.view(later).flash, None);
+    }
+
+    #[test]
+    fn any_input_wakes_after_an_idle_close() {
+        let mut e = Engine::new(Config::default());
+        let mut s = RadioState {
+            idle_closed: true,
+            ..Default::default()
+        };
+        e.handle(InputEvent::Pressed(Button::F2), Instant::now(), &mut s);
+        assert!(!s.idle_closed);
+    }
+
+    #[test]
+    fn vfo_select_follows_and_sets_the_radio() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["vfo_select,rw,enum,0,1"]);
+        let now = Instant::now();
+        assert_eq!(
+            act(&mut e, Action::VfoToggle, &mut s),
+            vec![Command::VfoSelect { trx: 0, ch: 1 }]
+        );
+        assert_eq!(e.view(now).active_vfo, 1);
+        // The radio switches back to A (its own VFO key): we follow.
+        s.trx[0].vfo_selected = Some(0);
+        e.tick(now, &mut s);
+        assert_eq!(e.view(now).active_vfo, 0);
+    }
+
+    #[test]
+    fn knob_values_are_guarded_and_stop_at_the_end() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let now = Instant::now();
+        assert_eq!(
+            e.handle(turn(Encoder::E1, 2), now, &mut s),
+            vec![Command::AfGain { trx: 0, pct: 31 }]
+        );
+        // The radio's reports of it are ignored while the knob is in use.
+        assert!(s.guarded("af_gain", now + Duration::from_millis(100)));
+        assert!(!s.guarded("af_gain", now + Duration::from_secs(2)));
+        assert!(!s.guarded("squelch", now));
+        // At the top of its travel there's nothing more to send.
+        s.trx[0].af_gain = Some(100);
+        assert!(e.handle(turn(Encoder::E1, 2), now, &mut s).is_empty());
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL   100"));
+    }
+
+    #[test]
+    fn mode_stepping_uses_the_modes_the_server_has() {
+        // kadrad-hub's IC-7100: `cw` and `cwr`, `nfm` and `wfm`, no `FM`.
+        let mut e = Engine::new(Config::default());
+        let mut s = connected();
+        s.mode_names = "lsb,usb,am,cw,cwr,rtty,rttyr,nfm,wfm,digl,digu,digfm,dv"
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        s.modes = s.mode_names.iter().map(|n| Mode::from_name(n)).collect();
+        // The default cycle: LSB, USB, CWU, AM, FM, DIGU.
+        let mut seen = Vec::new();
+        s.trx[0].mode = Some(Mode::Usb);
+        for _ in 0..6 {
+            let out = act(&mut e, Action::ModeNext, &mut s);
+            let [Command::Mode { mode, .. }] = out[..] else {
+                panic!("{out:?}")
+            };
+            let name = s.mode_wire_name(mode);
+            // The radio reports the mode by its own name.
+            s.trx[0].mode = Some(Mode::from_name(&name));
+            seen.push(name);
+        }
+        assert_eq!(seen, ["cw", "am", "nfm", "digu", "lsb", "usb"]);
+        // A server with Thetis's names is sent those.
+        let mut thetis = connected();
+        thetis.mode_names = vec![
+            "LSB".into(),
+            "USB".into(),
+            "CWL".into(),
+            "CWU".into(),
+            "FM".into(),
+        ];
+        thetis.modes = thetis.mode_names.iter().map(|n| Mode::from_name(n)).collect();
+        assert_eq!(thetis.mode_wire_name(Mode::CwU), "CWU");
+        assert_eq!(thetis.mode_wire_name(Mode::Fm), "FM");
+        // With no list, our own names.
+        assert_eq!(connected().mode_wire_name(Mode::CwU), "CWU");
+    }
+
+    #[test]
+    fn vol_is_the_programs_volume_where_the_server_has_one() {
+        // KADRAD's relay: the hub's manifest plus its own `volume`.
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["volume,rw,range,-60,0,0.1,db"]);
+        s.volume_db = Some(-30.0);
+        let now = Instant::now();
+        let out = e.handle(turn(Encoder::E1, 2), now, &mut s);
+        assert!(
+            matches!(out[..], [Command::Volume { db }] if (-29.5..-29.3).contains(&db)),
+            "{out:?}"
+        );
+        assert_eq!(e.view(now).flash.as_deref(), Some("VOL    51"));
+        // The radio's AF gain is left alone.
+        assert_eq!(s.trx[0].af_gain, Some(30));
+    }
+
+    #[test]
+    fn preamp_and_att_buttons_step_the_radios_settings() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["preamp,rw,enum,off,p1,p2", "attenuator,rw,enum,0,12"]);
+        s.trx[0].preamp = Some("off".into());
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            act(&mut e, Action::Preamp, &mut s);
+            seen.push(s.trx[0].preamp.clone().unwrap());
+        }
+        assert_eq!(seen, ["p1", "p2", "off", "p1"]);
+        // Not yet reported by the radio: the first in its list.
+        assert_eq!(
+            act(&mut e, Action::Att, &mut s),
+            vec![Command::Attenuator {
+                trx: 0,
+                value: "0".into()
+            }]
+        );
+        assert_eq!(
+            act(&mut e, Action::Att, &mut s),
+            vec![Command::Attenuator {
+                trx: 0,
+                value: "12".into()
+            }]
+        );
+        // A radio without them: nothing to send.
+        let mut plain = ic7100(&[]);
+        assert!(act(&mut e, Action::Preamp, &mut plain).is_empty());
+        assert!(act(&mut e, Action::Att, &mut plain).is_empty());
+    }
+
+    #[test]
+    fn control_button_asks_or_gives_up() {
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&["control_request,w,action", "control_release,w,action"]);
+        s.login_user = Some("g0kad".into());
+        s.control = Some("g4abc".into());
+        assert_eq!(
+            act(&mut e, Action::Control, &mut s),
+            vec![Command::ControlRequest]
+        );
+        s.control = Some("g0kad".into());
+        assert_eq!(
+            act(&mut e, Action::Control, &mut s),
+            vec![Command::ControlRelease]
+        );
+        // A server without control: nothing to send.
+        let mut plain = ic7100(&[]);
+        assert!(act(&mut e, Action::Control, &mut plain).is_empty());
     }
 }
