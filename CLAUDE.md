@@ -95,6 +95,13 @@ The maintainer wants the LCD to look like a real radio:
   `device:SunSDR2PRO`.
 - **Filter presets:** Thetis overwrites them when the filter is adjusted, so
   the connector keeps its own per-mode defaults in `[filters]`.
+- **Echo timing:** on the same PC, `vfo` echoes take up to ~85 ms on a fast
+  spin and filter changes ~370 ms, so `pacing = "auto"` does switch on for
+  Thetis. It felt as good as `on` (tested 2026-11-21).
+- **tune_drive:** works only while Thetis's tune power is a slider; with
+  tune power forced to a fixed value Thetis ignores it (no echo).
+- **Ignored:** `set_in_focus` (sent, window not raised). `mon_volume` is
+  echoed, rounded to 0.1 dB.
 
 ## piHPSDR TCI behaviour
 
@@ -141,7 +148,8 @@ cargo deny check licenses
 - **Linux:** needs `libudev-dev` and `pkg-config`, plus the X11 / Wayland /
   GL development packages for the window. Install
   `packaging/linux/50-tmate2.rules` so the TMATE-2 opens without root.
-- **CI:** `.github/workflows/ci.yml` runs on every push.
+- **CI:** `.github/workflows/ci.yml` runs on pushes to `main` and on pull
+  requests, not on other branches.
 - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag and
   builds Windows x64, Linux x64, Linux arm64 (Pi, built on Ubuntu 22.04 for
   glibc compatibility) and macOS arm64.

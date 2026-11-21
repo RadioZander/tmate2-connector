@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout_at;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use tmate2_core::config::{RadioConfig, TcixMode, PASSWORD_ENV};
 use tmate2_core::{Command, RadioState};
@@ -179,6 +179,7 @@ async fn serve(
                     Message::Close(_) => return Ended::Closed("server closed the connection".into()),
                     _ => continue, // binary audio / IQ / spectrum, ping/pong
                 };
+                trace!("TCI < {text}");
                 let now = Instant::now();
                 let mut out: Vec<String> = Vec::new();
                 let mut nonce: Option<String> = None;

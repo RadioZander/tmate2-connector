@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use tmate2_core::config::Pacing;
 use tmate2_core::{Command, Target};
+use tracing::debug;
 
 /// While paced, values go no more often than this (25 a second)…
 pub const PACE: Duration = Duration::from_millis(40);
@@ -130,10 +131,21 @@ impl Pacer {
                     Some(l) => l.mul_f32(0.7) + sample.mul_f32(0.3),
                 };
                 slot.lag = Some(lag);
+                let was = slot.slow;
                 if lag >= SLOW {
                     slot.slow = true;
                 } else if lag <= FAST {
                     slot.slow = false;
+                }
+                if slot.slow != was && self.mode == Pacing::Auto {
+                    let t = &slot.target;
+                    debug!(
+                        "pacing {} {}{}: echoes take {} ms",
+                        if slot.slow { "on for" } else { "off for" },
+                        t.name,
+                        t.trx.map_or(String::new(), |x| format!(" trx {x}")),
+                        lag.as_millis()
+                    );
                 }
             }
         }
