@@ -29,7 +29,7 @@ trx = 0
 # so they share control of the radio. The password can come from the
 # TMATE2_TCIX_PASSWORD environment variable instead of this file; this
 # file is plain text, so keep it private if you put the password here.
-# user = "g0kad"
+# user = "your-callsign"
 # password = ""
 
 [display]
