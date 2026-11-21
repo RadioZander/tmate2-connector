@@ -24,8 +24,8 @@ use crate::shared::Shared;
 // Each knob's labelled functions in LCD order, then the ones without a label.
 const E1_CHOICES: [KnobFunction; 11] = [
     KnobFunction::Vol,
-    KnobFunction::Sql,
     KnobFunction::Rfg,
+    KnobFunction::Sql,
     KnobFunction::Drv,
     KnobFunction::Nr,
     KnobFunction::Nb,

@@ -100,7 +100,8 @@ The maintainer wants the LCD to look like a real radio:
   Thetis. It felt as good as `on` (tested 2026-11-21).
 - **tune_drive:** works only while Thetis's tune power is a slider; with
   tune power forced to a fixed value Thetis ignores it (no echo).
-- **Ignored:** `set_in_focus` (sent, window not raised). `mon_volume` is
+- **Ignored:** `set_in_focus` (sent, window not raised), so the connector no
+  longer has a focus action. `mon_volume` is
   echoed, rounded to 0.1 dB.
 
 ## piHPSDR TCI behaviour

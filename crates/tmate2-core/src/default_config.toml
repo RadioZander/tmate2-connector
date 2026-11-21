@@ -90,7 +90,7 @@ fast_multiplier = 10
 #   tune_drive drive used while tuning
 # "start" is the function each knob is on when the connector starts.
 [e1]
-functions = ["vol", "sql", "rfg", "drv", "nr", "nb", "an"]
+functions = ["vol", "rfg", "sql", "drv", "nr", "nb", "an"]
 start = "vol"
 
 [e2]
@@ -156,9 +156,8 @@ NFM = [-5500, 5500]
 #       knob's current function; for the filter functions it restores the
 #       mode's default filter from [filters])
 #   Radio and connector
-#     power (start / stop the radio)  focus (bring the radio software's
-#     window to the front)  backlight_next (cycle the backlight presets
-#     until the next restart or settings change)
+#     power (start / stop the radio)  backlight_next (cycle the backlight
+#     presets until the next restart or settings change)
 #   TCI-X (only where the server offers them)
 #     control   ask for control of the radio, or give it up
 #     preamp  att   the next of the radio's preamp settings / attenuator

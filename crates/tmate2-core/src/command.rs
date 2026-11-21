@@ -137,8 +137,6 @@ pub enum Command {
     },
     /// Start (true) or stop the radio.
     Power(bool),
-    /// Bring the control software's window to the front.
-    Focus,
     /// TCI-X `af_gain`: the radio's own AF gain, 0-100.
     AfGain {
         trx: usize,
@@ -263,7 +261,6 @@ impl Command {
             Command::TuneDrive { .. } => "tune_drive",
             Command::Power(true) => "start",
             Command::Power(false) => "stop",
-            Command::Focus => "set_in_focus",
             Command::AfGain { .. } => "af_gain",
             Command::RfGain { .. } => "rf_gain",
             Command::SquelchKnob { .. } => "squelch",
@@ -332,7 +329,6 @@ impl Command {
             | C::MonVolume { .. }
             | C::CwSpeed(_)
             | C::Power(_)
-            | C::Focus
             | C::DialLock(_)
             | C::ControlRequest
             | C::ControlRelease
@@ -480,7 +476,6 @@ impl RadioState {
             | Command::Band { .. }
             | Command::ControlRequest
             | Command::ControlRelease
-            | Command::Focus
             | Command::EnableMeters
             | Command::EnableTxMeters
             | Command::Raw(_) => {}

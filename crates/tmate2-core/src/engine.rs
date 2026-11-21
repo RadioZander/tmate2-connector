@@ -825,7 +825,6 @@ impl Engine {
             Action::Mox => vec![Command::Mox { trx: t, on: !x.tx }],
             // Unknown power state counts as running, so the first press stops.
             Action::Power => vec![Command::Power(!state.power.unwrap_or(true))],
-            Action::Focus => vec![Command::Focus],
             Action::BacklightNext => {
                 let cur = self.cfg.display.backlight;
                 let i = BACKLIGHT_PRESETS.iter().position(|(_, c)| *c == cur);
@@ -1561,7 +1560,6 @@ mod tests {
                 },
             ),
             (Action::Power, Command::Power(false)),
-            (Action::Focus, Command::Focus),
         ];
         for (a, want) in cases {
             let mut e = engine_with_f4(a.clone());
@@ -1776,12 +1774,13 @@ mod tests {
         let mut s = ic7100(&[]);
         let now = Instant::now();
         assert!(!available(KnobFunction::Rfg, &s) && !available(KnobFunction::High, &s));
-        // E1 on RFG (no rf_gain) moves on to DRV; E2 on HIGH moves on to WIDTH.
-        e.e_idx = [2, 0];
+        // E1 on RFG (no rf_gain) moves on to SQL; E2 on HIGH moves on to WIDTH.
+        e.e_idx = [1, 0];
+        assert_eq!(e.view(now).e1, KnobFunction::Rfg);
         e.tick(now, &mut s);
         assert_eq!(
             (e.view(now).e1, e.view(now).e2),
-            (KnobFunction::Drv, KnobFunction::Width)
+            (KnobFunction::Sql, KnobFunction::Width)
         );
         // Stepping E2 from WIDTH skips SHIFT (no passband) to RIT, then XIT
         // (not offered) back round to WIDTH.

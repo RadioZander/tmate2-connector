@@ -411,7 +411,6 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::CwSpeed(wpm) => format!("cw_keyer_speed:{wpm};"),
         Command::TuneDrive { trx, pct } => format!("tune_drive:{trx},{pct};"),
         Command::Power(on) => if *on { "start;" } else { "stop;" }.to_string(),
-        Command::Focus => "set_in_focus;".to_string(),
         Command::AfGain { trx, pct } => format!("af_gain:{trx},{pct};"),
         Command::RfGain { trx, pct } => format!("rf_gain:{trx},{pct};"),
         Command::SquelchKnob { trx, pct } => format!("squelch:{trx},{pct};"),
@@ -627,7 +626,6 @@ mod tests {
             (Command::TuneDrive { trx: 0, pct: 30 }, "tune_drive:0,30;"),
             (Command::Power(true), "start;"),
             (Command::Power(false), "stop;"),
-            (Command::Focus, "set_in_focus;"),
             (Command::EnableTxMeters, "tx_sensors_enable:true,200;"),
         ];
         for (cmd, text) in cases {
