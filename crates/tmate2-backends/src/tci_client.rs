@@ -68,6 +68,13 @@ pub async fn run(
             s.connected = false;
             s.tcix = None;
             s.control = None;
+            // Nothing asked for on this connection will be answered now, and
+            // the next server may answer reads where this one didn't.
+            s.pending.clear();
+            s.reading.clear();
+            s.heard.clear();
+            s.unreadable.clear();
+            s.last_report.clear();
             match &ended {
                 Ended::Closed(why) => {
                     warn!("TCI connection closed: {why}");
@@ -232,7 +239,8 @@ async fn serve(
                             _ => {}
                         }
                         let was_ready = s.connected;
-                        tci::apply(&mut s, &m, now);
+                        tci::apply(&mut s, &m);
+                        s.note_heard(&m.name, &m.args, now);
                         if m.name == "ready" && !was_ready {
                             ready = true;
                             s.notice = None;
@@ -280,12 +288,12 @@ async fn serve(
                 }
                 let now = Instant::now();
                 let lines: Vec<String> = {
-                    let s = state.lock().unwrap();
-                    newest(first, cmds, &s)
+                    let mut s = state.lock().unwrap();
+                    let go: Vec<Command> = newest(first, cmds, &s)
                         .into_iter()
                         .filter_map(|c| pacer.offer(c, now))
-                        .filter_map(|c| tci::encode_for(&c, &s))
-                        .collect()
+                        .collect();
+                    lines_for(&go, &mut s)
                 };
                 for line in lines {
                     send_or_end!(line);
@@ -293,12 +301,9 @@ async fn serve(
             }
             _ = pace_wait => {
                 let lines: Vec<String> = {
-                    let s = state.lock().unwrap();
-                    pacer
-                        .due(Instant::now())
-                        .iter()
-                        .filter_map(|c| tci::encode_for(c, &s))
-                        .collect()
+                    let mut s = state.lock().unwrap();
+                    let go = pacer.due(Instant::now());
+                    lines_for(&go, &mut s)
                 };
                 for line in lines {
                     send_or_end!(line);
@@ -326,6 +331,18 @@ async fn serve(
 async fn send(tx: &mut futures_util::stream::SplitSink<Ws, Message>, line: String) -> Result<(), String> {
     debug!("TCI > {line}");
     tx.send(Message::text(line)).await.map_err(|e| e.to_string())
+}
+
+/// The lines for commands about to go, noting each as sent so its report
+/// can be told from an echo still on its way (see [`RadioState::sent`]).
+fn lines_for(cmds: &[Command], state: &mut RadioState) -> Vec<String> {
+    cmds.iter()
+        .filter_map(|c| {
+            let line = tci::encode_for(c, state)?;
+            state.sent(c);
+            Some(line)
+        })
+        .collect()
 }
 
 /// Take `first` plus everything already queued, keeping only the newest VFO

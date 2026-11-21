@@ -3,8 +3,6 @@
 //!
 //! Messages look like `name:arg,arg,...;`. Names are case-insensitive.
 
-use std::time::Instant;
-
 use tmate2_core::state::Mode;
 use tmate2_core::{Command, Manifest, RadioState};
 
@@ -110,26 +108,19 @@ fn b(s: &str) -> Option<bool> {
 }
 
 /// Apply a server message to the state. Returns true if it was understood.
-pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
+/// Every report is taken as it comes: the state is what the radio says.
+pub fn apply(state: &mut RadioState, m: &Msg) -> bool {
+    let known = apply_report(state, m);
+    state.reported(&m.name, &m.args);
+    known
+}
+
+fn apply_report(state: &mut RadioState, m: &Msg) -> bool {
     let a: Vec<&str> = m.args.iter().map(String::as_str).collect();
     let n = |i: usize| a.get(i).and_then(|s| s.parse::<i64>().ok());
     let f = |i: usize| a.get(i).and_then(|s| s.parse::<f32>().ok());
     let flag = |i: usize| a.get(i).and_then(|s| b(s));
     let trx = n(0).map(|v| v.max(0) as usize);
-
-    // A knob here is setting this right now: the echo of an earlier click
-    // would undo the later ones. The guard ends when the radio reports what
-    // we hold (it has caught up), or when its time runs out.
-    if let Some(target) = state.guarding(&m.name, &m.args, now) {
-        let mut probe = state.clone();
-        probe.guards.clear();
-        apply(&mut probe, m, now);
-        probe.guards.clone_from(&state.guards);
-        if probe == *state {
-            state.guards.remove(&target);
-        }
-        return true;
-    }
 
     macro_rules! set_trx_bool {
         ($field:ident) => {
@@ -153,7 +144,7 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
         }
         "vfo" => {
             if let (Some(t), Some(ch), Some(hz)) = (trx, n(1), n(2)) {
-                state.remote_vfo(t, ch.max(0) as usize, hz.max(0) as u64, now);
+                state.remote_vfo(t, ch.max(0) as usize, hz.max(0) as u64);
             }
         }
         "modulation" => {
@@ -426,6 +417,15 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::ControlRelease => "control_release;".to_string(),
         Command::EnableMeters => "rx_sensors_enable:true,200;".to_string(),
         Command::EnableTxMeters => "tx_sensors_enable:true,200;".to_string(),
+        // Standard TCI's read form: the command with only its receiver (and
+        // VFO, or channel) and no value.
+        Command::Query(t) => match (t.name, t.trx, t.vfo) {
+            ("rx_volume", Some(trx), _) => format!("rx_volume:{trx},0;"),
+            ("rx_channel_enable", Some(trx), _) => format!("rx_channel_enable:{trx},1;"),
+            (name, Some(trx), Some(vfo)) => format!("{name}:{trx},{vfo};"),
+            (name, Some(trx), None) => format!("{name}:{trx};"),
+            (name, None, _) => format!("{name};"),
+        },
         Command::Raw(text) => {
             let t = text.trim();
             if t.ends_with(';') {
@@ -477,15 +477,16 @@ impl TcixNegotiation {
 mod tests {
     use super::*;
 
+    use std::time::Instant;
+
     const THETIS_INIT: &str = include_str!("../tests/fixtures/thetis-init.tci");
 
     #[test]
     fn thetis_init_burst_fills_state() {
         let mut s = RadioState::default();
-        let now = Instant::now();
         for line in THETIS_INIT.lines() {
             for m in split(line) {
-                apply(&mut s, &m, now);
+                apply(&mut s, &m);
             }
         }
         assert!(s.connected, "ready; seen");
@@ -520,10 +521,9 @@ mod tests {
     #[test]
     fn pihpsdr_init_burst_fills_state() {
         let mut s = RadioState::default();
-        let now = Instant::now();
         for line in PIHPSDR_INIT.lines() {
             for m in split(line) {
-                apply(&mut s, &m, now);
+                apply(&mut s, &m);
             }
         }
         assert!(s.connected, "ready; seen");
@@ -561,7 +561,7 @@ mod tests {
     fn tx_sensors_give_peak_power_and_swr() {
         let mut s = RadioState::default();
         let m = parse("tx_sensors:0,-20.5,48.0,95.2,1.3;").unwrap();
-        assert!(apply(&mut s, &m, Instant::now()));
+        assert!(apply(&mut s, &m));
         assert_eq!(s.trx[0].tx_power_w, Some(95.2));
         assert_eq!(s.trx[0].tx_swr, Some(1.3));
     }
@@ -652,7 +652,6 @@ mod tests {
     fn hub(example: &str) -> RadioState {
         let mut s = RadioState::default();
         let mut n = TcixNegotiation::default();
-        let now = Instant::now();
         for line in example.lines().filter(|l| l.trim() != "---") {
             for m in split(line) {
                 if n.feed(&m) {
@@ -661,7 +660,7 @@ mod tests {
                     }
                     continue;
                 }
-                apply(&mut s, &m, now);
+                apply(&mut s, &m);
             }
         }
         s
@@ -680,7 +679,7 @@ mod tests {
         // Not in the example's push (the hub hadn't read the radio): feed them.
         let mut s = s;
         for m in split("af_gain:0,40;squelch:0,12;dial_lock:true;notch:0,true,1200;") {
-            assert!(apply(&mut s, &m, Instant::now()), "{m:?}");
+            assert!(apply(&mut s, &m), "{m:?}");
         }
         let t = &s.trx[0];
         assert_eq!(
@@ -702,15 +701,14 @@ mod tests {
     fn control_and_refusals() {
         let mut s = RadioState::default();
         s.trx_mut(0).tx = true; // shown at once on key-up
-        let now = Instant::now();
         for m in split("control:g4abc,1760729000;error:trx,control,g4abc;") {
-            apply(&mut s, &m, now);
+            apply(&mut s, &m);
         }
         assert_eq!(s.control.as_deref(), Some("g4abc"));
         assert!(!s.trx[0].tx, "a refused key-up isn't transmitting");
         assert_eq!((s.alert.as_deref(), s.alert_seq), (Some("ctrl"), 1));
         for m in split("control:;vfo_select:0,1;receive_only:true;error:atu_tune,interlock,amp;") {
-            apply(&mut s, &m, now);
+            apply(&mut s, &m);
         }
         assert_eq!(s.control, None);
         assert_eq!(s.trx[0].vfo_selected, Some(1));
@@ -745,58 +743,86 @@ mod tests {
     }
 
     #[test]
-    fn reports_of_a_knob_in_use_are_ignored() {
+    fn every_report_is_taken() {
         let mut s = RadioState::default();
         let t0 = Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
         s.trx_mut(0).af_gain = Some(20);
-        let af = Command::AfGain { trx: 0, pct: 20 }.target().unwrap();
-        s.guard(af, t0 + std::time::Duration::from_millis(400));
-        // The echo of an earlier click, while the knob is still turning.
-        let echo = parse("af_gain:0,17;").unwrap();
-        assert!(apply(&mut s, &echo, t0 + std::time::Duration::from_millis(50)));
-        assert_eq!(s.trx[0].af_gain, Some(20));
-        // Other reports still apply.
-        apply(&mut s, &parse("rf_gain:0,90;").unwrap(), t0);
+        // Two clicks of a knob go out.
+        for pct in [21, 22] {
+            let c = Command::AfGain { trx: 0, pct };
+            s.expect(c.clone(), ms(1500));
+            s.sent(&c);
+        }
+        // The echo of the first is shown; the knob goes on from the second.
+        assert!(apply(&mut s, &parse("af_gain:0,21;").unwrap()));
+        assert_eq!(s.trx[0].af_gain, Some(21));
+        assert_eq!(s.working(ms(10)).trx[0].af_gain, Some(22));
+        // Other reports apply as usual.
+        apply(&mut s, &parse("rf_gain:0,90;").unwrap());
         assert_eq!(s.trx[0].rf_gain, Some(90));
-        // The radio catches up with the value we hold: the guard ends, and
-        // a later change made at the radio is taken at once.
-        let soon = t0 + std::time::Duration::from_millis(100);
-        apply(&mut s, &parse("af_gain:0,20;").unwrap(), soon);
-        assert!(s.guarding("af_gain", &["0".into()], soon).is_none());
-        apply(&mut s, &echo, soon);
+        // A value of the radio's own is shown at once; the knob goes on from
+        // the second click until the hold runs out, then from the radio's.
+        apply(&mut s, &parse("af_gain:0,17;").unwrap());
         assert_eq!(s.trx[0].af_gain, Some(17));
-        // With no matching report, the guard runs out by itself.
-        s.guard(af, t0 + std::time::Duration::from_millis(400));
-        apply(
-            &mut s,
-            &parse("af_gain:0,5;").unwrap(),
-            t0 + std::time::Duration::from_millis(500),
-        );
-        assert_eq!(s.trx[0].af_gain, Some(5));
+        assert_eq!(s.working(ms(10)).trx[0].af_gain, Some(22));
+        assert_eq!(s.working(ms(1500)).trx[0].af_gain, Some(17));
+        // The radio catching up with the second ends the hold.
+        apply(&mut s, &parse("af_gain:0,22;").unwrap());
+        assert!(s.pending.is_empty());
     }
 
     #[test]
-    fn a_guard_holds_only_its_own_receiver() {
+    fn a_value_held_is_only_its_own_receivers() {
         let mut s = RadioState::default();
         let t0 = Instant::now();
         s.trx_mut(0).rx_volume_db = Some(-10.0);
-        let rx1 = Command::RxVolume { trx: 0, db: -10.0 }.target().unwrap();
-        s.guard(rx1, t0 + std::time::Duration::from_millis(400));
-        apply(&mut s, &parse("rx_volume:0,0,-20;").unwrap(), t0);
-        apply(&mut s, &parse("rx_volume:1,0,-20;").unwrap(), t0);
-        assert_eq!(s.trx[0].rx_volume_db, Some(-10.0), "RX1 is being set here");
-        assert_eq!(s.trx[1].rx_volume_db, Some(-20.0), "RX2 is not");
+        let c = Command::RxVolume { trx: 0, db: -12.0 };
+        s.expect(c.clone(), t0 + std::time::Duration::from_millis(400));
+        s.sent(&c);
+        apply(&mut s, &parse("rx_volume:1,0,-20;").unwrap());
+        assert_eq!(s.pending.len(), 1, "RX2's report leaves RX1's alone");
+        assert_eq!(s.trx[1].rx_volume_db, Some(-20.0));
+        apply(&mut s, &parse("rx_volume:0,0,-12;").unwrap());
+        assert!(s.pending.is_empty());
         // Radio-wide values have no receiver to tell apart.
         let vol = Command::Volume { db: -6.0 }.target().unwrap();
         assert!(vol.reported_by("volume", &["-12".into()]));
     }
 
     #[test]
+    fn reads_ask_without_a_value() {
+        let q = |c: Command| encode(&c.query().unwrap()).unwrap();
+        assert_eq!(q(Command::Nr { trx: 0, on: true }), "rx_nr_enable:0;");
+        assert_eq!(
+            q(Command::Vfo {
+                trx: 1,
+                vfo: 1,
+                hz: 7_000_000
+            }),
+            "vfo:1,1;"
+        );
+        assert_eq!(q(Command::Volume { db: -20.0 }), "volume;");
+        assert_eq!(q(Command::RxVolume { trx: 0, db: -20.0 }), "rx_volume:0,0;");
+        assert_eq!(q(Command::SubRx { trx: 0, on: true }), "rx_channel_enable:0,1;");
+        // Never a read that could start the radio, nor TCI-X's own commands.
+        assert!(Command::Power(true).query().is_none());
+        assert!(Command::AfGain { trx: 0, pct: 1 }.query().is_none());
+        // piHPSDR answers a filter read with the preset, not the edges in use.
+        assert!(Command::Filter {
+            trx: 0,
+            low: 100,
+            high: 2800
+        }
+        .query()
+        .is_none());
+    }
+
+    #[test]
     fn front_end_state_and_commands() {
         let mut s = RadioState::default();
-        let now = Instant::now();
         for m in split("preamp:0,p2;attenuator:0,12;antenna:0,ant2;rx_antenna:0,true;pa_enable:0,false;radio_state:no_response;") {
-            assert!(apply(&mut s, &m, now), "{m:?}");
+            assert!(apply(&mut s, &m), "{m:?}");
         }
         let t = &s.trx[0];
         assert_eq!(

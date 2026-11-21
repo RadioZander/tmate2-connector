@@ -1,10 +1,12 @@
-//! Radio state as reported by the backend (and optimistically updated by the
-//! engine so the display responds instantly while tuning).
+//! Radio state as the radio reports it. The display shows only this: a
+//! command we send changes nothing here until the radio reports the result.
+//! While a knob turns, the engine works from [`RadioState::working`], this
+//! state with the values it has asked for and not yet seen reported.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-use crate::command::Target;
+use crate::command::{Command, Target};
 use crate::manifest::{CapKind, Manifest};
 
 /// Operating mode, normalised across backends.
@@ -116,9 +118,6 @@ impl Mode {
 /// One transceiver (TCI "trx"): a receiver with VFO A / B and its controls.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Trx {
-    /// While tuning locally, ignore VFO echoes from the radio until this time,
-    /// so stale echoes don't make the display jump back.
-    pub vfo_guard_until: Option<Instant>,
     /// VFO frequencies in Hz: [A, B].
     pub vfo: [u64; 2],
     pub mode: Option<Mode>,
@@ -261,9 +260,35 @@ pub struct RadioState {
     /// request). `alert_seq` counts them, so each is shown once.
     pub alert: Option<String>,
     pub alert_seq: u64,
-    /// Commands (by wire name) whose reports from the radio are ignored
-    /// until the time given, because a knob here is setting them right now.
-    pub guards: HashMap<Target, Instant>,
+    /// What we have asked the radio for and not yet seen it report, by
+    /// target (see [`RadioState::expect`]).
+    pub pending: HashMap<Target, Pending>,
+    /// When the radio last reported each readable value (see
+    /// [`Target::of_report`]), however it came: a change, an echo, a read.
+    pub heard: HashMap<Target, Instant>,
+    /// Reads sent and not yet answered, with when they went.
+    pub reading: HashMap<Target, Instant>,
+    /// Commands whose reads this server leaves unanswered: they are not
+    /// waited for or polled again on this connection.
+    pub unreadable: HashSet<&'static str>,
+    /// The last report of each value asked for, as sent (its arguments).
+    pub last_report: HashMap<Target, Vec<String>>,
+}
+
+/// A value asked for (see [`RadioState::expect`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    /// The newest command for this target.
+    pub cmd: Command,
+    /// Until then the knobs carry on from `cmd`, not from the last report.
+    /// After it, a command the radio never answered is asked about once.
+    pub until: Instant,
+    /// Commands for this target sent and not yet reported back.
+    pub unanswered: u32,
+    /// `cmd` itself has been sent (the pacer may still hold it back).
+    pub sent: bool,
+    /// The radio didn't answer in time and was asked for the value.
+    pub asked: bool,
 }
 
 impl RadioState {
@@ -279,30 +304,172 @@ impl RadioState {
         self.trx.get(i)
     }
 
-    /// Apply a VFO frequency reported by the radio, unless we are tuning
-    /// that transceiver locally right now.
-    pub fn remote_vfo(&mut self, trx: usize, vfo: usize, hz: u64, now: Instant) {
-        let t = self.trx_mut(trx);
-        if t.vfo_guard_until.is_some_and(|g| now < g) || vfo > 1 {
-            return;
+    /// A VFO frequency reported by the radio.
+    pub fn remote_vfo(&mut self, trx: usize, vfo: usize, hz: u64) {
+        if vfo < 2 {
+            self.trx_mut(trx).vfo[vfo] = hz;
         }
-        t.vfo[vfo] = hz;
     }
 
-    /// Ignore the radio's reports of `target` until `until`: a knob here is
-    /// setting it, and the echo of an earlier click would undo later ones.
-    pub fn guard(&mut self, target: Target, until: Instant) {
-        self.guards.insert(target, until);
+    /// We are sending `cmd`. Until `until` the knobs carry on from it rather
+    /// than from the last report, so a fast turn isn't pulled back by the
+    /// echoes of its earlier clicks. Nothing shown changes until the radio
+    /// reports.
+    pub fn expect(&mut self, cmd: Command, until: Instant) {
+        let Some(target) = cmd.target() else { return };
+        let p = self.pending.entry(target).or_insert_with(|| Pending {
+            cmd: cmd.clone(),
+            until,
+            unanswered: 0,
+            sent: false,
+            asked: false,
+        });
+        p.cmd = cmd;
+        p.until = until;
+        p.sent = false;
+        p.asked = false;
     }
 
-    /// The guard (see [`RadioState::guard`]) that has a server message
-    /// `name:args;` ignored now, if any. Only the transceiver being set is
-    /// guarded: RX2's reports still land while RX1's knob turns.
-    pub fn guarding(&self, name: &str, args: &[String], now: Instant) -> Option<Target> {
-        self.guards
+    /// `cmd` has gone to the radio.
+    pub fn sent(&mut self, cmd: &Command) {
+        if let Some(p) = cmd.target().and_then(|t| self.pending.get_mut(&t)) {
+            p.unanswered += 1;
+            if p.cmd == *cmd {
+                p.sent = true;
+            }
+        }
+    }
+
+    /// The radio reported `name:args;`, already applied. The knobs carry on
+    /// from the value they asked for until the radio reports that value (it
+    /// has caught up), or until the hold runs out: an earlier click's echo
+    /// mustn't become what the next click counts from (G0KAD, IC-7100
+    /// behind kadrad-hub). What is shown is the report either way.
+    ///
+    /// The hold also ends when the radio has answered everything sent and
+    /// says the same as last time: it is staying where it is (at the end of
+    /// its range, as piHPSDR's volume does at -40 dB), so the knob mustn't
+    /// count on past it. Late echoes of a turning knob differ each time.
+    pub fn reported(&mut self, name: &str, args: &[String]) {
+        let hit: Vec<Target> = self
+            .pending
+            .keys()
+            .filter(|t| t.reported_by(name, args))
+            .copied()
+            .collect();
+        for t in hit {
+            let shows = self.shows(&self.pending[&t].cmd);
+            let again = self.last_report.insert(t, args.to_vec()).as_deref() == Some(args);
+            let p = self.pending.get_mut(&t).expect("listed above");
+            p.unanswered = p.unanswered.saturating_sub(1);
+            let staying = again && p.sent && p.unanswered == 0;
+            if shows || staying {
+                self.pending.remove(&t);
+            }
+        }
+    }
+
+    /// Note when a readable value was reported (see [`RadioState::heard`]).
+    pub fn note_heard(&mut self, name: &str, args: &[String], now: Instant) {
+        if let Some(t) = Target::of_report(name, args) {
+            self.heard.insert(t, now);
+            self.reading.remove(&t);
+        }
+    }
+
+    /// What we have for `t` can be changed from without asking first: the
+    /// radio reported it within `fresh`, a knob here is setting it, or it
+    /// can't be asked for (not readable, or this server doesn't answer).
+    pub fn is_current(&self, t: &Target, now: Instant, fresh: Duration) -> bool {
+        !t.readable()
+            || self.unreadable.contains(t.name)
+            || self.pending.get(t).is_some_and(|p| now < p.until && !p.asked)
+            || self
+                .heard
+                .get(t)
+                .is_some_and(|h| now.saturating_duration_since(*h) < fresh)
+    }
+
+    /// The read for `t`, unless one is already out or this server doesn't
+    /// answer them.
+    pub fn read(&mut self, t: Target, now: Instant) -> Option<Command> {
+        if !t.readable() || self.unreadable.contains(t.name) || self.reading.contains_key(&t) {
+            return None;
+        }
+        self.reading.insert(t, now);
+        Some(Command::Query(t))
+    }
+
+    /// Reads unanswered for `wait`: this server doesn't answer reads of
+    /// that command, so stop asking.
+    pub fn expire_reads(&mut self, now: Instant, wait: Duration) {
+        let late: Vec<Target> = self
+            .reading
             .iter()
-            .find(|(t, until)| now < **until && t.reported_by(name, args))
+            .filter(|(_, at)| now.saturating_duration_since(**at) >= wait)
             .map(|(t, _)| *t)
+            .collect();
+        for t in late {
+            self.reading.remove(&t);
+            self.unreadable.insert(t.name);
+        }
+    }
+
+    /// What the radio reports already is what `cmd` sets.
+    fn shows(&self, cmd: &Command) -> bool {
+        let mut probe = self.clone();
+        probe.apply(cmd);
+        probe == *self
+    }
+
+    /// This state with the values asked for and not yet reported, for the
+    /// knobs and buttons to work from.
+    pub fn working(&self, now: Instant) -> RadioState {
+        let mut w = self.clone();
+        for p in self.pending.values().filter(|p| now < p.until && !p.asked) {
+            w.apply(&p.cmd);
+        }
+        w
+    }
+
+    /// Take back from a [`RadioState::working`] copy what the engine may
+    /// change for real: the record of what has been asked for and read, and
+    /// the user's return after an idle close. The values it worked from stay
+    /// behind; this state keeps what the radio reported.
+    pub fn adopt(&mut self, work: RadioState) {
+        self.pending = work.pending;
+        self.reading = work.reading;
+        self.idle_closed = work.idle_closed;
+    }
+
+    /// Follow up what the radio left unanswered by its time: ask once for
+    /// the value (the reads returned here are to be sent), and if that goes
+    /// unanswered for `wait` too, forget the value rather than show a
+    /// guess. Values the radio answered, or that never went, just expire.
+    pub fn overdue(&mut self, now: Instant, wait: Duration) -> Vec<Command> {
+        let late: Vec<Target> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| now >= p.until)
+            .map(|(t, _)| *t)
+            .collect();
+        let mut reads = Vec::new();
+        for t in late {
+            let p = self.pending.get_mut(&t).expect("listed above");
+            if !p.asked && p.sent && p.unanswered > 0 {
+                if let Some(t) = p.cmd.query().and(Some(t)) {
+                    p.asked = true;
+                    p.until = now + wait;
+                    reads.extend(self.read(t, now));
+                    continue;
+                }
+            }
+            let p = self.pending.remove(&t).expect("listed above");
+            if p.asked {
+                self.forget(&p.cmd);
+            }
+        }
+        reads
     }
 
     /// The name to send for `mode`: the server's own spelling where its

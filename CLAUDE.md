@@ -20,6 +20,7 @@ controller. It is written in Rust, MIT-licensed and public on GitHub.
   - CAT backends: PowerSDR / Thetis ZZ, Kenwood, Elecraft, Icom CI-V
   - Emulation of the ELAD HMI serial output, built only from captures
   - Packaging
+  - Radio profiles for server quirks (see "piHPSDR TCI behaviour": CWL)
 - **Scope:** keep it focused. Advanced settings belong in the radio
   software, not here.
 
@@ -89,6 +90,26 @@ The maintainer wants the LCD to look like a real radio:
   0–100). Thetis truncates when converting back, so aim 0.03 dB above each
   step.
 
+## Radio state
+
+- **Shown:** the LCD and GUI show only what the radio reports. A command
+  changes nothing shown until the radio's report arrives.
+- **Knob hold (G0KAD):** a knob counts from the value it asked for until
+  the radio reports that value, or for 1.5 s (the dial 0.4 s), so late
+  echoes can't pull it back. The hold also ends when the radio repeats
+  its last report after answering everything sent: the value is at the
+  radio's limit, and the knob stops there too.
+- **Read, modify, write:** at the start of each turn or press, a value not
+  heard in the last 250 ms is read first, in standard TCI's read form
+  (`name:trx;`). A server that doesn't answer within 500 ms isn't asked
+  again for that command on this connection.
+- **Unanswered:** a command with no report gets one read after 0.5 s. If
+  that goes unanswered too, the value is taken as unknown (lamp off).
+- **Poll:** what the LCD shows is read once a second (frequency, mode,
+  NR, NB, LOCK, TX, TUNE), skipping what a knob is setting right now.
+- The same rules apply to every server. Don't branch on which program it
+  is.
+
 ## Thetis TCI behaviour
 
 - **Server:** 127.0.0.1:50001. It reports `protocol:ExpertSDR3,2.0` and
@@ -117,9 +138,14 @@ ANAN-G2. The original g0orx/pihpsdr has no TCI, only rigctl on port 19090.
 - **Modes:** `modulations_list` has `CW` and `FMN`. Both CWL and CWU are
   reported as `modulation:…,CW` and FM as `FM`. `Mode::Cw` (sideband unknown)
   shows plain CW. Setting accepts `CW`/`CWL`/`CWU`/`FM`/`FMN` but not `NFM`.
+- **CW sideband:** `CW` sets CWU. `CWL` / `CWU` are accepted although not
+  listed (seen in the source, not tried on the wire). The connector sends
+  the listed name, so CWL can't be chosen from the TMATE-2 (roadmap: radio
+  profiles).
 - **Volume:** `volume` / `rx_volume` are whole dB from -40 to 0. Use
   `volume_scale = "db"`; the "percent" scale stalls because the rounded echo
-  undoes each 0.6 dB step.
+  undoes each 0.6 dB step. A value below -40 is answered with -40, and the
+  knob stops there. `rx_volume` is the receiver's AF gain.
 - **Meters:** `rx_channel_sensors` and `rx_sensors` arrive once a second
   whatever interval is asked for. `tx_sensors:0,mic,rms,peak,swr` is sent only
   while transmitting with forward power.
@@ -127,7 +153,22 @@ ANAN-G2. The original g0orx/pihpsdr has no TCI, only rigctl on port 19090.
   reports e.g. `-250,250` in both CWL and CWU), unlike Thetis. Plain CW
   therefore has its own `[filters]` entry, `CW = [-250, 250]`, which is
   centred on the pitch in both sidebands. Tested on the G2, including the
-  width, high and low knobs in CWL and CWU. FM ignores filter commands.
+  width, high and low knobs in CWL and CWU. FM ignores filter commands but
+  still echoes the edges asked for.
+- **Reports:** only frequency, mode, split and MOX changes are announced.
+  Volume, NR / NB / ANF, squelch, drive, filter and the rest changed in
+  piHPSDR's own window are not, and NR / NB / ANF aren't echoed. Reads are
+  answered at once, so read-before-write and the poll cover this.
+- **Read bugs (to report upstream):** the `rx_filter_band` read gives the
+  mode's preset, not the edges in use, so the connector never reads the
+  filter. `rx_nb_enable` reads back SNB, not NB, so the NB lamp follows SNB
+  and turning NB off can take a double press.
+- **Echo timing:** on the same machine, 0–6 ms, so `pacing = "auto"`
+  never engages. Not measured over a network.
+- **Unlabelled functions:** `cw_keyer_speed` works. `tune_drive` works but
+  applies at the next tune, and setting it turns piHPSDR's "tune uses
+  drive" off. `mon_volume` and `mon_enable` are stubs (always -60 /
+  false).
 - **Quirks:** `audio_stream_channels` and `audio_stream_samples` have no `;`,
   harmless because each message is its own WebSocket frame. No TCI-X reply.
 - **Fixture:** `crates/tmate2-backends/tests/fixtures/pihpsdr-init.tci`.

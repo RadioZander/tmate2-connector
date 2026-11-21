@@ -180,7 +180,7 @@ pub const AGC_MODES: [&str; 6] = ["off", "long", "slow", "normal", "fast", "cust
 /// Modes stepped through by `agc_next`.
 pub const AGC_CYCLE: [&str; 4] = ["long", "slow", "normal", "fast"];
 
-/// How E1 VOL shows and steps the master volume.
+/// How the volume knobs (VOL, rx_vol, mon_vol) show and step the volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeScale {

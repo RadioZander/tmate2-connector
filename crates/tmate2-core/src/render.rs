@@ -258,6 +258,7 @@ pub fn render(
 mod tests {
     use super::*;
     use crate::config::{Config, KnobFunction};
+    use crate::engine::tests::input;
 
     fn view() -> View {
         View {
@@ -561,8 +562,9 @@ mod tests {
         let mut e = Engine::new(Config::default());
         let mut s = RadioState::default();
         let now = std::time::Instant::now();
-        assert_eq!(e.view(now).last_knob, 0);
-        e.handle(
+        assert_eq!(e.view(now, &s).last_knob, 0);
+        input(
+            &mut e,
             InputEvent::Turned {
                 encoder: Encoder::E2,
                 delta: 2,
@@ -570,10 +572,11 @@ mod tests {
             now,
             &mut s,
         );
-        assert_eq!(e.view(now).last_knob, 1);
-        e.handle(InputEvent::Pressed(Button::E1Push), now, &mut s);
-        assert_eq!(e.view(now).last_knob, 0);
-        e.handle(
+        assert_eq!(e.view(now, &s).last_knob, 1);
+        input(&mut e, InputEvent::Pressed(Button::E1Push), now, &mut s);
+        assert_eq!(e.view(now, &s).last_knob, 0);
+        input(
+            &mut e,
             InputEvent::Turned {
                 encoder: Encoder::Main,
                 delta: 1,
@@ -581,6 +584,6 @@ mod tests {
             now,
             &mut s,
         );
-        assert_eq!(e.view(now).last_knob, 0, "the main knob doesn't count");
+        assert_eq!(e.view(now, &s).last_knob, 0, "the main knob doesn't count");
     }
 }

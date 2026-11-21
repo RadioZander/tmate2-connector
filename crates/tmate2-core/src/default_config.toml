@@ -43,8 +43,8 @@ backlight_disconnected = [255, 120, 0]
 readout = "dbm"
 # How long (ms) a value you change with E1 / E2 is shown on the main display.
 flash_ms = 1500
-# How E1 VOL shows and steps the master volume:
-#   "percent" - 0 to 100, matching Thetis's Master AF (1 per click). Needs
+# How the volume knobs (vol, rx_vol, mon_vol) show and step the volume:
+#   "percent" - 0 to 100, matching Thetis's AF sliders (1 per click). Needs
 #               software that keeps fractions of a dB, like Thetis.
 #   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software.
 #               Use this with piHPSDR, which works in whole dB from -40 to 0.

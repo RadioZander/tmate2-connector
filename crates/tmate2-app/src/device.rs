@@ -95,7 +95,13 @@ pub fn run(
             if now.duration_since(last_draw) >= FRAME {
                 let snapshot = shared.radio.lock().unwrap().clone();
                 let cfg = engine.config().display.clone();
-                render(&snapshot, &engine.view(now), &cfg, &map, dev.output_mut());
+                render(
+                    &snapshot,
+                    &engine.view(now, &snapshot),
+                    &cfg,
+                    &map,
+                    dev.output_mut(),
+                );
                 if shared.all_segments_until.lock().unwrap().is_some_and(|t| now < t) {
                     dev.output_mut().all_segments();
                 }

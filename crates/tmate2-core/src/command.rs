@@ -200,6 +200,9 @@ pub enum Command {
     EnableTxMeters,
     /// Protocol-specific text passed through unchanged (escape hatch).
     Raw(String),
+    /// Ask the radio what `target` is now (standard TCI's read form, e.g.
+    /// `rx_nr_enable:0;`), when it didn't report the result of a command.
+    Query(Target),
 }
 
 /// What a command sets: see [`Command::target`].
@@ -210,7 +213,102 @@ pub struct Target {
     pub vfo: Option<usize>,
 }
 
+/// What a value's reports are told apart by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// One for the radio (`volume`).
+    Radio,
+    /// One per transceiver, the first argument (`rx_nr_enable:0`).
+    Trx,
+    /// One per transceiver and VFO, the first two (`vfo:0,1`).
+    Vfo,
+}
+
+/// Plain TCI commands whose read form is the command without its value
+/// (`rx_nr_enable:0;`, `volume;`), answered with a report of the value.
+/// Not `start` / `stop`, which a read would set off, nor TCI-X's own.
+/// Not `rx_filter_band`: piHPSDR answers a read with the mode's preset,
+/// not the edges in use, so a filter knob would jump back to the preset.
+/// The filter knobs go by the echoes of what they send.
+const READABLE: &[(&str, Scope)] = &[
+    ("vfo", Scope::Vfo),
+    ("modulation", Scope::Trx),
+    ("volume", Scope::Radio),
+    ("mute", Scope::Radio),
+    ("drive", Scope::Trx),
+    ("sql_enable", Scope::Trx),
+    ("sql_level", Scope::Trx),
+    ("agc_gain", Scope::Trx),
+    ("agc_mode", Scope::Trx),
+    ("rx_nr_enable", Scope::Trx),
+    ("rx_nb_enable", Scope::Trx),
+    ("rx_anf_enable", Scope::Trx),
+    ("rx_nf_enable", Scope::Trx),
+    ("rx_apf_enable", Scope::Trx),
+    ("rx_bin_enable", Scope::Trx),
+    ("rit_enable", Scope::Trx),
+    ("rit_offset", Scope::Trx),
+    ("xit_enable", Scope::Trx),
+    ("xit_offset", Scope::Trx),
+    ("split_enable", Scope::Trx),
+    ("lock", Scope::Trx),
+    ("trx", Scope::Trx),
+    ("tune", Scope::Trx),
+    ("rx_enable", Scope::Trx),
+    ("rx_channel_enable", Scope::Trx),
+    ("rx_mute", Scope::Trx),
+    ("rx_volume", Scope::Trx),
+    ("tune_drive", Scope::Trx),
+    ("mon_enable", Scope::Radio),
+    ("mon_volume", Scope::Radio),
+    ("cw_keyer_speed", Scope::Radio),
+];
+
 impl Target {
+    /// A target for a readable value (see [`READABLE`]).
+    fn readable_as(name: &str, trx: Option<usize>, vfo: Option<usize>) -> Option<Target> {
+        let (name, scope) = READABLE.iter().find(|(n, _)| *n == name)?;
+        Some(match scope {
+            Scope::Radio => Target {
+                name,
+                trx: None,
+                vfo: None,
+            },
+            Scope::Trx => Target {
+                name,
+                trx: Some(trx?),
+                vfo: None,
+            },
+            Scope::Vfo => Target {
+                name,
+                trx: Some(trx?),
+                vfo: Some(vfo?),
+            },
+        })
+    }
+
+    /// The readable value a server message `name:args;` reports, if it is
+    /// one: what [`RadioState::heard`] keeps the time of.
+    pub fn of_report(name: &str, args: &[String]) -> Option<Target> {
+        let arg = |i: usize| args.get(i).and_then(|a| a.trim().parse::<usize>().ok());
+        Target::readable_as(name, arg(0), arg(1))
+    }
+
+    /// `vfo` (0 = A) of `trx`, as a readable value.
+    pub fn vfo(trx: usize, vfo: usize) -> Target {
+        Target::readable_as("vfo", Some(trx), Some(vfo)).expect("vfo is readable")
+    }
+
+    /// A readable value of `trx` by its TCI name (`rx_nr_enable`).
+    pub fn of_trx(name: &str, trx: usize) -> Option<Target> {
+        Target::readable_as(name, Some(trx), None)
+    }
+
+    /// Plain TCI can ask the radio for this (see [`READABLE`]).
+    pub fn readable(&self) -> bool {
+        Target::readable_as(self.name, self.trx, self.vfo).as_ref() == Some(self)
+    }
+
     /// Whether a server message (`name:args;`) reports this: the same
     /// command, and where we know them the same transceiver (first
     /// argument) and VFO (second).
@@ -276,7 +374,7 @@ impl Command {
             Command::ControlRelease => "control_release",
             Command::EnableMeters => "rx_sensors_enable",
             Command::EnableTxMeters => "tx_sensors_enable",
-            Command::Raw(_) => return None,
+            Command::Raw(_) | Command::Query(_) => return None,
         })
     }
 
@@ -334,13 +432,14 @@ impl Command {
             | C::ControlRelease
             | C::EnableMeters
             | C::EnableTxMeters
-            | C::Raw(_) => None,
+            | C::Raw(_)
+            | C::Query(_) => None,
         }
     }
 
-    /// What a newer value replaces and the pacer and echo guard go by: the
-    /// wire name, the transceiver, and for the dial the VFO. `None` for
-    /// raw text.
+    /// What a newer value replaces, and what the pacer and the record of
+    /// values asked for go by: the wire name, the transceiver, and for the
+    /// dial the VFO. `None` for raw text and reads.
     pub fn target(&self) -> Option<Target> {
         let vfo = match self {
             Command::Vfo { vfo, .. } => Some(*vfo),
@@ -353,10 +452,10 @@ impl Command {
         })
     }
 
-    /// A value set by turning a knob, one click at a time. The radio's
-    /// reports of it are ignored for a moment after we send one (the echo of
-    /// an earlier click would undo later ones), and of several waiting to be
-    /// sent only the newest goes.
+    /// A value set by turning a knob, one click at a time. The knob carries
+    /// on from the value it asked for until the radio has answered (so the
+    /// echo of an earlier click can't pull it back), and of several waiting
+    /// to be sent only the newest goes.
     pub fn knob_value(&self) -> bool {
         matches!(
             self,
@@ -376,6 +475,32 @@ impl Command {
                 | Command::SquelchKnob { .. }
                 | Command::FilterPreset { .. }
         )
+    }
+
+    /// A command that sets something the radio reports back, so we wait for
+    /// that report rather than assume the command worked (see
+    /// [`RadioState::expect`]). Not starting or stopping the radio, and not
+    /// those that only lead to other reports (a band key, a tuner cycle).
+    pub fn awaits_report(&self) -> bool {
+        !matches!(
+            self,
+            Command::Vfo { vfo: 2.., .. }
+                | Command::Power(_)
+                | Command::AtuTune { .. }
+                | Command::Band { .. }
+                | Command::ControlRequest
+                | Command::ControlRelease
+                | Command::EnableMeters
+                | Command::EnableTxMeters
+                | Command::Raw(_)
+                | Command::Query(_)
+        )
+    }
+
+    /// The read that asks the radio what this command set, for the plain TCI
+    /// commands that have one (see [`READABLE`]).
+    pub fn query(&self) -> Option<Command> {
+        self.target().filter(Target::readable).map(Command::Query)
     }
 
     /// Unkeying is never refused (TCI-X §4.4), so it is always sent.
@@ -420,8 +545,9 @@ impl RadioState {
         }
     }
 
-    /// Optimistically apply a command we are sending, so the display updates
-    /// at once. The radio's own reports overwrite this when they arrive.
+    /// Set what `cmd` sets, as if the radio had reported it. Used only on a
+    /// [`RadioState::working`] copy, where the knobs carry on from the
+    /// values they have asked for: the state shown is what the radio reports.
     pub fn apply(&mut self, cmd: &Command) {
         match cmd {
             &Command::Vfo { trx, vfo, hz } if vfo < 2 => self.trx_mut(trx).vfo[vfo] = hz,
@@ -478,7 +604,44 @@ impl RadioState {
             | Command::ControlRelease
             | Command::EnableMeters
             | Command::EnableTxMeters
-            | Command::Raw(_) => {}
+            | Command::Raw(_)
+            | Command::Query(_) => {}
+        }
+    }
+
+    /// The radio answered neither `cmd` nor a read of it: what we last heard
+    /// may be out of date, so show less (a lamp off, a value unknown) rather
+    /// than guess. The frequency, offsets and keying are left as last
+    /// reported.
+    pub fn forget(&mut self, cmd: &Command) {
+        match *cmd {
+            Command::Mode { trx, .. } => self.trx_mut(trx).mode = None,
+            Command::Filter { trx, .. } => self.trx_mut(trx).filter = None,
+            Command::Volume { .. } => self.volume_db = None,
+            Command::Mute(_) => self.mute = false,
+            Command::Drive { trx, .. } => self.trx_mut(trx).drive = None,
+            Command::Squelch { trx, .. } => self.trx_mut(trx).sql_enable = false,
+            Command::SquelchLevel { trx, .. } => self.trx_mut(trx).sql_level = None,
+            Command::AgcGain { trx, .. } => self.trx_mut(trx).agc_gain = None,
+            Command::Nr { trx, .. } => self.trx_mut(trx).nr = false,
+            Command::Nb { trx, .. } => self.trx_mut(trx).nb = false,
+            Command::Anf { trx, .. } => self.trx_mut(trx).anf = false,
+            Command::Notch { trx, .. } => self.trx_mut(trx).notch = false,
+            Command::Rit { trx, .. } => self.trx_mut(trx).rit = false,
+            Command::Xit { trx, .. } => self.trx_mut(trx).xit = false,
+            Command::Split { trx, .. } => self.trx_mut(trx).split = false,
+            Command::Lock { trx, .. } => self.trx_mut(trx).lock = false,
+            Command::AgcMode { trx, .. } => self.trx_mut(trx).agc_mode = None,
+            Command::SubRx { trx, .. } => self.trx_mut(trx).sub_rx = false,
+            Command::Apf { trx, .. } => self.trx_mut(trx).apf = false,
+            Command::Binaural { trx, .. } => self.trx_mut(trx).binaural = false,
+            Command::RxMute { trx, .. } => self.trx_mut(trx).rx_mute = false,
+            Command::RxVolume { trx, .. } => self.trx_mut(trx).rx_volume_db = None,
+            Command::Monitor(_) => self.monitor = false,
+            Command::MonVolume { .. } => self.mon_volume_db = None,
+            Command::CwSpeed(_) => self.cw_speed = None,
+            Command::TuneDrive { trx, .. } => self.trx_mut(trx).tune_drive = None,
+            _ => {}
         }
     }
 }

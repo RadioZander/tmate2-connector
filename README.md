@@ -110,6 +110,9 @@ screen. The first run writes a commented configuration file and logs where.
 - piHPSDR on the ANAN-G2's internal Raspberry Pi (headless service)
 - Emulation of the original ELAD HMI serial output (Perseus / PowerSDR)
 - Installers / packages (Windows installer, .deb for the Pi)
+- Radio profiles for server quirks that standard TCI can't express. For
+  example, piHPSDR lists only `CW` but accepts `CWL` / `CWU`, so for now the
+  TMATE-2 can't select CWL there: plain `CW` lands on CWU.
 
 ## Building
 
