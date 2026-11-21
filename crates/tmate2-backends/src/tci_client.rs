@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout_at;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use tmate2_core::config::{RadioConfig, TcixMode, PASSWORD_ENV};
 use tmate2_core::{Command, RadioState};
@@ -23,6 +23,9 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const LOGIN_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TCIX_TIMEOUT: Duration = Duration::from_secs(2);
 const IDLE_POLL: Duration = Duration::from_millis(250);
+/// Periodic meter reports (TCI's, and TCI-X `meter`), not logged line by
+/// line at -v.
+const METERS: [&str; 4] = ["rx_sensors", "rx_channel_sensors", "tx_sensors", "meter"];
 /// Why a connection ended, which decides when to try again.
 #[derive(Debug, PartialEq)]
 enum Ended {
@@ -179,8 +182,13 @@ async fn serve(
                     Message::Close(_) => return Ended::Closed("server closed the connection".into()),
                     _ => continue, // binary audio / IQ / spectrum, ping/pong
                 };
-                trace!("TCI < {text}");
                 let now = Instant::now();
+                // With -v: what came back, so the echoes can be read against
+                // the "TCI >" lines. The meter reports, several a second,
+                // are left out.
+                if !tci::split(&text).all(|m| METERS.contains(&m.name.as_str())) {
+                    debug!("TCI < {}", text.trim());
+                }
                 let mut out: Vec<String> = Vec::new();
                 let mut nonce: Option<String> = None;
                 let mut end: Option<Ended> = None;

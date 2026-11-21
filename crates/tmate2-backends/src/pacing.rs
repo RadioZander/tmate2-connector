@@ -14,9 +14,10 @@
 
 use std::time::{Duration, Instant};
 
+use tracing::{debug, info};
+
 use tmate2_core::config::Pacing;
 use tmate2_core::{Command, Target};
-use tracing::debug;
 
 /// While paced, values go no more often than this (25 a second)…
 pub const PACE: Duration = Duration::from_millis(40);
@@ -62,6 +63,24 @@ impl Slot {
     }
 }
 
+fn paced(mode: Pacing, slot: &Slot) -> bool {
+    match mode {
+        Pacing::Off => false,
+        Pacing::Auto => slot.slow,
+        Pacing::On => true,
+    }
+}
+
+/// A target as it reads in the log: `vfo:0,1` (RX1, VFO B), `af_gain:0`,
+/// `volume`.
+fn label(t: &Target) -> String {
+    match (t.trx, t.vfo) {
+        (Some(trx), Some(vfo)) => format!("{}:{trx},{vfo}", t.name),
+        (Some(trx), None) => format!("{}:{trx}", t.name),
+        _ => t.name.to_string(),
+    }
+}
+
 impl Pacer {
     pub fn new(mode: Pacing) -> Pacer {
         Pacer {
@@ -81,11 +100,7 @@ impl Pacer {
     }
 
     fn paced(&self, slot: &Slot) -> bool {
-        match self.mode {
-            Pacing::Off => false,
-            Pacing::Auto => slot.slow,
-            Pacing::On => true,
-        }
+        paced(self.mode, slot)
     }
 
     /// Offer a command: returned if it may go now, else kept as the newest
@@ -122,6 +137,7 @@ impl Pacer {
     /// The server reported `name:args;`: what was in flight for that
     /// target has landed (or the radio changed it itself).
     pub fn echoed(&mut self, name: &str, args: &[String], now: Instant) {
+        let mode = self.mode;
         for slot in self.slots.iter_mut().filter(|s| s.target.reported_by(name, args)) {
             slot.awaiting = false;
             if let Some(t0) = slot.since.take() {
@@ -131,21 +147,35 @@ impl Pacer {
                     Some(l) => l.mul_f32(0.7) + sample.mul_f32(0.3),
                 };
                 slot.lag = Some(lag);
-                let was = slot.slow;
+                let was_slow = slot.slow;
                 if lag >= SLOW {
                     slot.slow = true;
                 } else if lag <= FAST {
                     slot.slow = false;
                 }
-                if slot.slow != was && self.mode == Pacing::Auto {
-                    let t = &slot.target;
-                    debug!(
-                        "pacing {} {}{}: echoes take {} ms",
-                        if slot.slow { "on for" } else { "off for" },
-                        t.name,
-                        t.trx.map_or(String::new(), |x| format!(" trx {x}")),
-                        lag.as_millis()
-                    );
+                // With -v: the echo times behind the pacing, to read against
+                // SLOW and FAST on a real server.
+                debug!(
+                    "echo {}: {} ms, average {} ms{}",
+                    label(&slot.target),
+                    sample.as_millis(),
+                    lag.as_millis(),
+                    if paced(mode, slot) { " (paced)" } else { "" }
+                );
+                if mode == Pacing::Auto && slot.slow != was_slow {
+                    if slot.slow {
+                        info!(
+                            "pacing {}: the server's echoes average {} ms; waiting for each before the next value",
+                            label(&slot.target),
+                            lag.as_millis()
+                        );
+                    } else {
+                        info!(
+                            "pacing {}: echoes back to {} ms; sending every value again",
+                            label(&slot.target),
+                            lag.as_millis()
+                        );
+                    }
                 }
             }
         }
@@ -192,6 +222,20 @@ mod tests {
     /// Echo of `vfo(trx, ..)` from the server.
     fn echo(p: &mut Pacer, trx: usize, at: Instant) {
         p.echoed("vfo", &args(&[&trx.to_string(), "0", "14074000"]), at);
+    }
+
+    #[test]
+    fn log_labels_name_the_receiver_and_vfo() {
+        let b = Command::Vfo {
+            trx: 0,
+            vfo: 1,
+            hz: 7,
+        };
+        assert_eq!(label(&b.target().unwrap()), "vfo:0,1");
+        let af = Command::AfGain { trx: 1, pct: 20 };
+        assert_eq!(label(&af.target().unwrap()), "af_gain:1");
+        let vol = Command::Volume { db: -6.0 };
+        assert_eq!(label(&vol.target().unwrap()), "volume");
     }
 
     #[test]
