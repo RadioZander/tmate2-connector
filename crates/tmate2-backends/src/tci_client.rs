@@ -23,6 +23,8 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const LOGIN_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TCIX_TIMEOUT: Duration = Duration::from_secs(2);
 const IDLE_POLL: Duration = Duration::from_millis(250);
+/// Periodic meter reports, not logged line by line at -v.
+const METERS: [&str; 3] = ["rx_sensors", "rx_channel_sensors", "tx_sensors"];
 /// Why a connection ended, which decides when to try again.
 #[derive(Debug, PartialEq)]
 enum Ended {
@@ -180,6 +182,12 @@ async fn serve(
                     _ => continue, // binary audio / IQ / spectrum, ping/pong
                 };
                 let now = Instant::now();
+                // With -v: what came back, so the echoes can be read against
+                // the "TCI >" lines. The meter reports, several a second,
+                // are left out.
+                if !tci::split(&text).all(|m| METERS.contains(&m.name.as_str())) {
+                    debug!("TCI < {}", text.trim());
+                }
                 let mut out: Vec<String> = Vec::new();
                 let mut nonce: Option<String> = None;
                 let mut end: Option<Ended> = None;
