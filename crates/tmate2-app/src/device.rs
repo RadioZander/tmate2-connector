@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use tmate2_core::render::render;
 use tmate2_core::{Command, Config, Engine};
@@ -81,6 +81,7 @@ pub fn run(
                     tracker.feed(report, &mut events);
                     let now = Instant::now();
                     for ev in events.drain(..) {
+                        trace!("input {ev:?}");
                         *shared.last_input.lock().unwrap() = Some((ev, now));
                         let cmds = engine.handle(ev, now, &mut shared.radio.lock().unwrap());
                         send(cmds);

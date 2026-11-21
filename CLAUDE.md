@@ -41,7 +41,7 @@ controller. It is written in Rust, MIT-licensed and public on GitHub.
 |---|---|
 | `tmate2-hid` | HID reports, encoder tracking, LCD segment map (`segmap.default.toml`), 7-segment font |
 | `tmate2-core` | config (`default_config.toml` holds the commented defaults and is the single source of defaults), radio state, `Command`, mapping `engine`, LCD `render` |
-| `tmate2-backends` | TCI parser/encoder (`tci.rs`, tests against `tests/fixtures/thetis-init.tci`), WebSocket client with reconnect and TCI-X negotiation |
+| `tmate2-backends` | TCI parser/encoder (`tci.rs`, tests against `tests/fixtures/thetis-init.tci`), WebSocket client with reconnect and TCI-X negotiation and login, `pacing.rs` (dial / knob pacing: `[radio] pacing = off|auto|on`; `auto` paces a target only once its echoes take over 80 ms). At `-v` the client logs lines both ways (`TCI >` / `TCI <`, meter reports left out) and the pacer logs each matched echo's delay and average, and when `auto` switches a target to paced or back |
 | `tmate2-app` | the `tmate2` binary: device thread, GUI (`gui/`, saves with `toml_edit` so comments are kept), headless mode |
 | `tmate2-probe` | hardware diagnostics: `list`, `dump`, `walk`, `demo`, `rgb`, `contrast`, `text`, ... |
 
@@ -95,6 +95,14 @@ The maintainer wants the LCD to look like a real radio:
   `device:SunSDR2PRO`.
 - **Filter presets:** Thetis overwrites them when the filter is adjusted, so
   the connector keeps its own per-mode defaults in `[filters]`.
+- **Echo timing:** on the same PC, `vfo` echoes take up to ~85 ms on a fast
+  spin and filter changes ~370 ms, so `pacing = "auto"` does switch on for
+  Thetis. It felt as good as `on` (tested 2026-11-21).
+- **tune_drive:** works only while Thetis's tune power is a slider; with
+  tune power forced to a fixed value Thetis ignores it (no echo).
+- **Ignored:** `set_in_focus` (sent, window not raised), so the connector no
+  longer has a focus action. `mon_volume` is
+  echoed, rounded to 0.1 dB.
 
 ## piHPSDR TCI behaviour
 
@@ -141,7 +149,8 @@ cargo deny check licenses
 - **Linux:** needs `libudev-dev` and `pkg-config`, plus the X11 / Wayland /
   GL development packages for the window. Install
   `packaging/linux/50-tmate2.rules` so the TMATE-2 opens without root.
-- **CI:** `.github/workflows/ci.yml` runs on every push.
+- **CI:** `.github/workflows/ci.yml` runs on pushes to `main` and on pull
+  requests, not on other branches.
 - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag and
   builds Windows x64, Linux x64, Linux arm64 (Pi, built on Ubuntu 22.04 for
   glibc compatibility) and macOS arm64.

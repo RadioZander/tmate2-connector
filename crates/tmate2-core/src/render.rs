@@ -4,7 +4,7 @@ use tmate2_hid::{OutputReport, SegmentMap};
 
 use crate::config::{DisplayConfig, KnobFunction, Readout, TxMeter, TxReadout};
 use crate::engine::View;
-use crate::state::{Mode, RadioState};
+use crate::state::{Lamp, Mode, RadioState};
 
 /// Scale labels that are always shown (scale.10 is deliberately not used).
 const SCALE: [&str; 12] = [
@@ -87,8 +87,10 @@ fn mode_icons(m: Mode) -> &'static [&'static str] {
         Mode::Am => &["mode.am"],
         Mode::Sam => &["mode.sam"],
         Mode::Dsb => &["mode.dsb"],
-        // No W: neither Thetis nor piHPSDR has a wide-FM mode.
+        // W only when the radio reports wide FM: Thetis lists NFM and FM but
+        // they are one mode, and piHPSDR has no wide FM.
         Mode::Fm | Mode::Nfm => &["mode.fm"],
+        Mode::Wfm => &["mode.fm", "mode.fm.w"],
         Mode::DigL => &["mode.dig", "mode.dig.minus"],
         Mode::DigU => &["mode.dig", "mode.dig.plus"],
         Mode::Drm => &["mode.drm"],
@@ -111,7 +113,7 @@ pub fn render(
         out.set_rgb(r, g, b);
         out.set_usb_led(false);
         out.set_lock_led(false);
-        map.draw_text(out, "main", "no radio");
+        map.draw_text(out, "main", state.notice.as_deref().unwrap_or("no radio"));
         return;
     }
 
@@ -124,7 +126,7 @@ pub fn render(
     };
     out.set_rgb(r, g, b);
     out.set_usb_led(true);
-    out.set_lock_led(trx.lock);
+    out.set_lock_led(trx.lock || state.dial_lock);
 
     // Main display: a flashed value, or the active VFO frequency.
     match &view.flash {
@@ -155,12 +157,42 @@ pub fn render(
     if trx.nb {
         on("left.nb");
     }
-    // Knob labels. Functions without a label of their own light only E1 / E2.
-    on("e1");
+    // The radio's front end, where the server reports it (TCI-X).
+    let (att, pre) = state.front_end_lamps(view.trx);
+    for (lamp, name) in [(att, "att"), (pre, "pre")] {
+        match lamp {
+            Lamp::Off => {}
+            Lamp::On => on(name),
+            Lamp::Step(n) => {
+                on(name);
+                on(&format!("{name}.{n}"));
+            }
+        }
+    }
+    if state.other_antenna(view.trx) {
+        on("left.ant");
+    }
+    if trx.pa_enable == Some(false) {
+        on("lp");
+    }
+    if state.radio_state.as_deref().is_some_and(|r| r != "connected") {
+        on("err");
+    }
+    // Knob labels. Functions without a label of their own light only E1 / E2,
+    // and on receive the small readout holds the name of one of them. If both
+    // knobs are on such functions, only the E marker of the knob named there
+    // stays lit, so the name can't be taken for the other knob's.
+    let named = if transmitting { None } else { view.readout_knob() };
+    let marker = |k: usize| view.knob(k).has_lcd_label() || named.is_none_or(|n| n == k);
+    if marker(0) {
+        on("e1");
+    }
     if view.e1.has_lcd_label() {
         on(&format!("e1.{}", view.e1.name()));
     }
-    on("e2");
+    if marker(1) {
+        on("e2");
+    }
     match view.e2 {
         KnobFunction::Width => {
             on("e2.high");
@@ -198,6 +230,15 @@ pub fn render(
         for i in 1..=bars_for_dbm(dbm) {
             on(&format!("bar.{i}"));
         }
+    }
+    // A knob resting on a function without an LCD label: the readout holds
+    // its name instead, so it's clear which one the knob is on.
+    if let Some((name, minus)) = named.and_then(|k| view.knob(k).readout_name()) {
+        if minus {
+            on("smeter.minus");
+        }
+        map.draw_text(out, "smeter", name);
+    } else if let Some(dbm) = trx.rx_dbm {
         match cfg.readout {
             Readout::Dbm => {
                 let v = dbm.round() as i32;
@@ -226,6 +267,7 @@ mod tests {
             e1: KnobFunction::Vol,
             e2: KnobFunction::Shift,
             flash: None,
+            last_knob: 0,
         }
     }
 
@@ -248,6 +290,73 @@ mod tests {
         assert_eq!(s_units_text(-73.0), "9");
         assert_eq!(s_units_text(-63.0), "+10");
         assert_eq!(s_units_text(-50.0), "+20");
+    }
+
+    #[test]
+    fn front_end_lamps_follow_the_radios_own_lists() {
+        let map = SegmentMap::builtin();
+        let cfg = Config::default();
+        let radio = |caps: &[&str]| {
+            let mut s = RadioState {
+                connected: true,
+                ..Default::default()
+            };
+            let mut m = crate::Manifest::default();
+            for line in caps {
+                let args: Vec<String> = line.split(',').map(str::to_string).collect();
+                assert!(m.apply(&args), "{line}");
+            }
+            s.tcix = Some(m);
+            s.trx_mut(0).vfo[0] = 14_074_000;
+            s
+        };
+        let lit = |s: &RadioState| {
+            let mut out = OutputReport::default();
+            render(s, &view(), &cfg.display, &map, &mut out);
+            [
+                "att", "att.1", "att.2", "pre", "pre.1", "pre.2", "left.ant", "lp", "err",
+            ]
+            .into_iter()
+            .filter(|n| out.segment(map.get(n).unwrap()))
+            .collect::<Vec<_>>()
+        };
+        // An IC-7100: two preamps, one attenuator step, two antennas.
+        let mut s = radio(&[
+            "preamp,rw,enum,off,p1,p2",
+            "attenuator,rw,enum,0,12",
+            "antenna,rw,enum,ant1,ant2",
+        ]);
+        assert!(lit(&s).is_empty());
+        let t = s.trx_mut(0);
+        (t.preamp, t.attenuator, t.antenna) = (Some("off".into()), Some("0".into()), Some("ant1".into()));
+        assert!(lit(&s).is_empty());
+        s.trx_mut(0).preamp = Some("p1".into());
+        assert_eq!(lit(&s), ["pre", "pre.1"]);
+        let t = s.trx_mut(0);
+        (t.preamp, t.attenuator, t.antenna) = (Some("p2".into()), Some("12".into()), Some("ant2".into()));
+        // One attenuator step: ATT with no number.
+        assert_eq!(lit(&s), ["att", "pre", "pre.2", "left.ant"]);
+        // Four attenuator steps (a Yaesu): 1, then 2 for the rest.
+        let mut y = radio(&["attenuator,rw,enum,0,6,12,18", "preamp,rw,enum,off,p1"]);
+        y.trx_mut(0).attenuator = Some("6".into());
+        y.trx_mut(0).preamp = Some("p1".into());
+        assert_eq!(lit(&y), ["att", "att.1", "pre"]);
+        y.trx_mut(0).attenuator = Some("18".into());
+        assert_eq!(lit(&y)[..2], ["att", "att.2"]);
+        // A FlexRadio's preamp is a gain in dB: PRE above 0, ATT below.
+        let mut f = radio(&["preamp,rw,enum,-20,-10,0,10,20,30"]);
+        f.trx_mut(0).preamp = Some("20".into());
+        assert_eq!(lit(&f), ["pre"]);
+        f.trx_mut(0).preamp = Some("-10".into());
+        assert_eq!(lit(&f), ["att"]);
+        f.trx_mut(0).preamp = Some("0".into());
+        // The PA off, the receive antenna, and a radio that isn't answering.
+        f.trx_mut(0).pa_enable = Some(false);
+        f.trx_mut(0).rx_antenna = true;
+        f.radio_state = Some("no_response".into());
+        assert_eq!(lit(&f), ["left.ant", "lp", "err"]);
+        f.radio_state = Some("connected".into());
+        assert_eq!(lit(&f), ["left.ant", "lp"]);
     }
 
     #[test]
@@ -339,6 +448,7 @@ mod tests {
         for m in [Mode::Fm, Mode::Nfm] {
             assert!(lit(m, "mode.fm") && !lit(m, "mode.fm.w"), "{m:?}");
         }
+        assert!(lit(Mode::Wfm, "mode.fm") && lit(Mode::Wfm, "mode.fm.w"));
     }
 
     #[test]
@@ -357,5 +467,120 @@ mod tests {
         assert_eq!(swr_text(1.24), "1_2");
         assert_eq!(swr_text(2.96), "3_0");
         assert_eq!(swr_text(12.0), "Hi");
+    }
+
+    /// The small readout's digits show exactly `text`.
+    fn readout_is(map: &SegmentMap, out: &OutputReport, text: &str) -> bool {
+        let mut want = OutputReport::default();
+        map.draw_text(&mut want, "smeter", text);
+        (1..=3).all(|d| {
+            "abcdefg".chars().all(|seg| {
+                let a = map.get(&format!("smeter.{d}.{seg}")).unwrap();
+                out.segment(a) == want.segment(a)
+            })
+        })
+    }
+
+    #[test]
+    fn readout_names_a_knob_on_a_function_without_a_label() {
+        let map = SegmentMap::builtin();
+        let cfg = Config::default();
+        let mut s = RadioState {
+            connected: true,
+            ..Default::default()
+        };
+        s.trx_mut(0).rx_dbm = Some(-73.0);
+        let mut out = OutputReport::default();
+        let lit = |out: &OutputReport, n: &str| out.segment(map.get(n).unwrap());
+        for (f, name, minus) in [
+            (KnobFunction::RxVol, "AF", false),
+            (KnobFunction::MonVol, "non", true),
+            (KnobFunction::CwSpeed, "SPd", false),
+            (KnobFunction::TuneDrive, "tdr", false),
+        ] {
+            let v = View { e1: f, ..view() };
+            render(&s, &v, &cfg.display, &map, &mut out);
+            assert!(readout_is(&map, &out, name), "{f:?} shows {name}");
+            assert_eq!(lit(&out, "smeter.minus"), minus, "{f:?} minus");
+            assert!(!lit(&out, "unit.dbm"), "{f:?}: no dBm unit");
+            assert!(lit(&out, "bar.1"), "{f:?}: the S-meter bars still work");
+        }
+        // On a labelled function: -73 dBm as usual.
+        render(&s, &view(), &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "73") && lit(&out, "smeter.minus") && lit(&out, "unit.dbm"));
+        // Both knobs unlabelled: the one touched last.
+        let both = View {
+            e1: KnobFunction::CwSpeed,
+            e2: KnobFunction::TuneDrive,
+            last_knob: 1,
+            ..view()
+        };
+        render(&s, &both, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "tdr"));
+        // Only E2's marker: the name is E2's, and E1's function isn't shown.
+        assert!(lit(&out, "e2") && !lit(&out, "e1"));
+        let both_e1 = View {
+            last_knob: 0,
+            ..both.clone()
+        };
+        render(&s, &both_e1, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "SPd") && lit(&out, "e1") && !lit(&out, "e2"));
+        // E2 touched last but labelled: E1's name.
+        let e1_only = View {
+            e1: KnobFunction::CwSpeed,
+            last_knob: 1,
+            ..view()
+        };
+        render(&s, &e1_only, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "SPd"));
+        // E2 on a labelled function keeps its marker and label.
+        assert!(lit(&out, "e1") && lit(&out, "e2") && lit(&out, "e2.shift"));
+        // Transmitting: watts as before.
+        s.trx_mut(0).tx = true;
+        s.trx_mut(0).tx_power_w = Some(50.0);
+        render(
+            &s,
+            &View {
+                e1: KnobFunction::CwSpeed,
+                ..view()
+            },
+            &cfg.display,
+            &map,
+            &mut out,
+        );
+        assert!(readout_is(&map, &out, "50") && lit(&out, "unit.w"));
+        // No name on transmit, so both markers stay lit.
+        render(&s, &both, &cfg.display, &map, &mut out);
+        assert!(lit(&out, "e1") && lit(&out, "e2"));
+    }
+
+    #[test]
+    fn last_knob_follows_turns_and_pushes() {
+        use crate::engine::Engine;
+        use tmate2_hid::{Button, Encoder, InputEvent};
+        let mut e = Engine::new(Config::default());
+        let mut s = RadioState::default();
+        let now = std::time::Instant::now();
+        assert_eq!(e.view(now).last_knob, 0);
+        e.handle(
+            InputEvent::Turned {
+                encoder: Encoder::E2,
+                delta: 2,
+            },
+            now,
+            &mut s,
+        );
+        assert_eq!(e.view(now).last_knob, 1);
+        e.handle(InputEvent::Pressed(Button::E1Push), now, &mut s);
+        assert_eq!(e.view(now).last_knob, 0);
+        e.handle(
+            InputEvent::Turned {
+                encoder: Encoder::Main,
+                delta: 1,
+            },
+            now,
+            &mut s,
+        );
+        assert_eq!(e.view(now).last_knob, 0, "the main knob doesn't count");
     }
 }

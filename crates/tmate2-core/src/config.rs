@@ -58,7 +58,32 @@ pub struct RadioConfig {
     pub host: String,
     pub port: u16,
     pub tcix: TcixMode,
+    /// How dial and knob values are paced to the server.
+    #[serde(default)]
+    pub pacing: Pacing,
     pub trx: usize,
+    /// TCI-X login (§4.3), for a server that asks for one.
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Environment variable that supplies the TCI-X password instead of the
+/// configuration file.
+pub const PASSWORD_ENV: &str = "TMATE2_TCIX_PASSWORD";
+
+impl RadioConfig {
+    /// The login to use, if both a user and a password are set (the
+    /// password from the environment first, then the file).
+    pub fn credentials(&self) -> Option<(String, String)> {
+        let user = self.user.as_deref().map(str::trim).filter(|u| !u.is_empty())?;
+        let password = std::env::var(PASSWORD_ENV)
+            .ok()
+            .or_else(|| self.password.clone())
+            .filter(|p| !p.is_empty())?;
+        Some((user.to_string(), password))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -72,6 +97,20 @@ pub enum Backend {
 pub enum TcixMode {
     Off,
     Auto,
+    On,
+}
+
+/// Pacing of dial and knob values (see `pacing` in `default_config.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pacing {
+    /// Send every value at once (newest per target when several queue up).
+    Off,
+    /// Send at once while the server keeps up; one value in flight per
+    /// target once its echoes fall behind.
+    #[default]
+    Auto,
+    /// Always one value in flight per target, the next on the echo.
     On,
 }
 
@@ -329,6 +368,20 @@ impl KnobFunction {
         !Self::UNLABELLED.contains(&self)
     }
 
+    /// For a function without an LCD label: the name the small 3-digit
+    /// readout holds while a knob rests on it, and whether the minus segment
+    /// to its left is lit with it. MON is "-non" ("m" can't be drawn on
+    /// seven segments).
+    pub fn readout_name(self) -> Option<(&'static str, bool)> {
+        match self {
+            KnobFunction::RxVol => Some(("AF", false)),
+            KnobFunction::MonVol => Some(("non", true)),
+            KnobFunction::CwSpeed => Some(("SPd", false)),
+            KnobFunction::TuneDrive => Some(("tdr", false)),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             KnobFunction::Vol => "vol",
@@ -417,7 +470,6 @@ pub enum Action {
     Mox,
     Ptt,
     Power,
-    Focus,
     BacklightNext,
     StepNext,
     StepPrev,
@@ -425,6 +477,11 @@ pub enum Action {
     E2Next,
     E1Toggle,
     E2Toggle,
+    /// TCI-X control (§4.4): ask for it, or give it up if we hold it.
+    Control,
+    /// TCI-X `preamp` / `attenuator`: the next of the radio's settings.
+    Preamp,
+    Att,
     Raw(String),
     None,
 }
@@ -469,7 +526,6 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("mox", Action::Mox),
     ("ptt", Action::Ptt),
     ("power", Action::Power),
-    ("focus", Action::Focus),
     ("backlight_next", Action::BacklightNext),
     ("step_next", Action::StepNext),
     ("step_prev", Action::StepPrev),
@@ -477,6 +533,9 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("e2_next", Action::E2Next),
     ("e1_toggle", Action::E1Toggle),
     ("e2_toggle", Action::E2Toggle),
+    ("control", Action::Control),
+    ("preamp", Action::Preamp),
+    ("att", Action::Att),
     ("none", Action::None),
 ];
 
