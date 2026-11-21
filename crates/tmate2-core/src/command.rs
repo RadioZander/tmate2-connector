@@ -204,6 +204,26 @@ pub enum Command {
     Raw(String),
 }
 
+/// What a command sets: see [`Command::target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Target {
+    pub name: &'static str,
+    pub trx: Option<usize>,
+    pub vfo: Option<usize>,
+}
+
+impl Target {
+    /// Whether a server message (`name:args;`) reports this: the same
+    /// command, and where we know them the same transceiver (first
+    /// argument) and VFO (second).
+    pub fn reported_by(&self, name: &str, args: &[String]) -> bool {
+        let arg = |i: usize| args.get(i).and_then(|a| a.trim().parse::<usize>().ok());
+        self.name == name
+            && self.trx.is_none_or(|t| arg(0) == Some(t))
+            && self.vfo.is_none_or(|v| arg(1) == Some(v))
+    }
+}
+
 impl Command {
     /// The TCI command name this is sent as, for checking against the
     /// server's manifest. `None` for raw text, which is sent as written.
@@ -260,6 +280,80 @@ impl Command {
             Command::EnableMeters => "rx_sensors_enable",
             Command::EnableTxMeters => "tx_sensors_enable",
             Command::Raw(_) => return None,
+        })
+    }
+
+    /// The transceiver this command is for; `None` for the radio-wide ones
+    /// (master volume, monitor, CW speed, power, ...). On the wire it is the
+    /// first argument.
+    pub fn trx(&self) -> Option<usize> {
+        use Command as C;
+        match self {
+            C::Vfo { trx, .. }
+            | C::Mode { trx, .. }
+            | C::Filter { trx, .. }
+            | C::Drive { trx, .. }
+            | C::Squelch { trx, .. }
+            | C::SquelchLevel { trx, .. }
+            | C::AgcGain { trx, .. }
+            | C::Nr { trx, .. }
+            | C::Nb { trx, .. }
+            | C::Anf { trx, .. }
+            | C::Notch { trx, .. }
+            | C::Rit { trx, .. }
+            | C::RitOffset { trx, .. }
+            | C::Xit { trx, .. }
+            | C::XitOffset { trx, .. }
+            | C::Split { trx, .. }
+            | C::Lock { trx, .. }
+            | C::Mox { trx, .. }
+            | C::Tune { trx, .. }
+            | C::AgcMode { trx, .. }
+            | C::RxEnable { trx, .. }
+            | C::SubRx { trx, .. }
+            | C::Apf { trx, .. }
+            | C::Binaural { trx, .. }
+            | C::RxMute { trx, .. }
+            | C::RxVolume { trx, .. }
+            | C::TuneDrive { trx, .. }
+            | C::AfGain { trx, .. }
+            | C::RfGain { trx, .. }
+            | C::SquelchKnob { trx, .. }
+            | C::FilterPreset { trx, .. }
+            | C::NotchAt { trx, .. }
+            | C::AtuTune { trx }
+            | C::Band { trx, .. }
+            | C::VfoSelect { trx, .. }
+            | C::Preamp { trx, .. }
+            | C::Attenuator { trx, .. } => Some(*trx),
+            C::Volume { .. }
+            | C::Mute(_)
+            | C::Monitor(_)
+            | C::MonVolume { .. }
+            | C::CwSpeed(_)
+            | C::Power(_)
+            | C::Focus
+            | C::DialLock(_)
+            | C::ControlRequest
+            | C::ControlRelease
+            | C::EnableMeters
+            | C::EnableTxMeters
+            | C::Raw(_) => None,
+        }
+    }
+
+    /// What a newer value replaces and the pacer and echo guard go by: the
+    /// wire name, the transceiver, and for the dial the VFO. `None` for
+    /// raw text.
+    pub fn target(&self) -> Option<Target> {
+        let vfo = match self {
+            Command::Vfo { vfo, .. } => Some(*vfo),
+            _ => None,
+        };
+        self.wire_name().map(|name| Target {
+            name,
+            trx: self.trx(),
+            vfo,
         })
     }
 

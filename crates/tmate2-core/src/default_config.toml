@@ -15,6 +15,13 @@ port = 50001
 #   "auto" - ask the server; quietly fall back to plain TCI if it doesn't answer
 #   "on"   - like auto, but warn if the server doesn't support TCI-X
 tcix = "auto"
+# Pacing of the dial and knobs, for radios that can't keep up (a radio
+# reached over a network takes longer over a step than the dial does):
+#   "off"  - send every step at once
+#   "auto" - send at once while the radio keeps up; when its replies fall
+#            behind, wait for each before sending the newest value
+#   "on"   - always wait for the radio's reply (or 0.3 s) between values
+pacing = "auto"
 # Which receiver / transceiver the TMATE-2 controls (0 = the first).
 trx = 0
 # TCI-X login, for a server that asks for one (kadrad-hub on another

@@ -58,6 +58,9 @@ pub struct RadioConfig {
     pub host: String,
     pub port: u16,
     pub tcix: TcixMode,
+    /// How dial and knob values are paced to the server.
+    #[serde(default)]
+    pub pacing: Pacing,
     pub trx: usize,
     /// TCI-X login (§4.3), for a server that asks for one.
     #[serde(default)]
@@ -94,6 +97,20 @@ pub enum Backend {
 pub enum TcixMode {
     Off,
     Auto,
+    On,
+}
+
+/// Pacing of dial and knob values (see `pacing` in `default_config.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pacing {
+    /// Send every value at once (newest per target when several queue up).
+    Off,
+    /// Send at once while the server keeps up; one value in flight per
+    /// target once its echoes fall behind.
+    #[default]
+    Auto,
+    /// Always one value in flight per target, the next on the echo.
     On,
 }
 

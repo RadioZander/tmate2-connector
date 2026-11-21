@@ -120,13 +120,13 @@ pub fn apply(state: &mut RadioState, m: &Msg, now: Instant) -> bool {
     // A knob here is setting this right now: the echo of an earlier click
     // would undo the later ones. The guard ends when the radio reports what
     // we hold (it has caught up), or when its time runs out.
-    if state.guarded(&m.name, now) {
+    if let Some(target) = state.guarding(&m.name, &m.args, now) {
         let mut probe = state.clone();
         probe.guards.clear();
         apply(&mut probe, m, now);
         probe.guards.clone_from(&state.guards);
         if probe == *state {
-            state.guards.remove(m.name.as_str());
+            state.guards.remove(&target);
         }
         return true;
     }
@@ -751,7 +751,8 @@ mod tests {
         let mut s = RadioState::default();
         let t0 = Instant::now();
         s.trx_mut(0).af_gain = Some(20);
-        s.guard("af_gain", t0 + std::time::Duration::from_millis(400));
+        let af = Command::AfGain { trx: 0, pct: 20 }.target().unwrap();
+        s.guard(af, t0 + std::time::Duration::from_millis(400));
         // The echo of an earlier click, while the knob is still turning.
         let echo = parse("af_gain:0,17;").unwrap();
         assert!(apply(&mut s, &echo, t0 + std::time::Duration::from_millis(50)));
@@ -763,17 +764,33 @@ mod tests {
         // a later change made at the radio is taken at once.
         let soon = t0 + std::time::Duration::from_millis(100);
         apply(&mut s, &parse("af_gain:0,20;").unwrap(), soon);
-        assert!(!s.guarded("af_gain", soon));
+        assert!(s.guarding("af_gain", &["0".into()], soon).is_none());
         apply(&mut s, &echo, soon);
         assert_eq!(s.trx[0].af_gain, Some(17));
         // With no matching report, the guard runs out by itself.
-        s.guard("af_gain", t0 + std::time::Duration::from_millis(400));
+        s.guard(af, t0 + std::time::Duration::from_millis(400));
         apply(
             &mut s,
             &parse("af_gain:0,5;").unwrap(),
             t0 + std::time::Duration::from_millis(500),
         );
         assert_eq!(s.trx[0].af_gain, Some(5));
+    }
+
+    #[test]
+    fn a_guard_holds_only_its_own_receiver() {
+        let mut s = RadioState::default();
+        let t0 = Instant::now();
+        s.trx_mut(0).rx_volume_db = Some(-10.0);
+        let rx1 = Command::RxVolume { trx: 0, db: -10.0 }.target().unwrap();
+        s.guard(rx1, t0 + std::time::Duration::from_millis(400));
+        apply(&mut s, &parse("rx_volume:0,0,-20;").unwrap(), t0);
+        apply(&mut s, &parse("rx_volume:1,0,-20;").unwrap(), t0);
+        assert_eq!(s.trx[0].rx_volume_db, Some(-10.0), "RX1 is being set here");
+        assert_eq!(s.trx[1].rx_volume_db, Some(-20.0), "RX2 is not");
+        // Radio-wide values have no receiver to tell apart.
+        let vol = Command::Volume { db: -6.0 }.target().unwrap();
+        assert!(vol.reported_by("volume", &["-12".into()]));
     }
 
     #[test]

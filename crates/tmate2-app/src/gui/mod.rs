@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::watch;
 
 use tmate2_core::config::{
-    Action, ButtonAction, Config, KnobFunction, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
+    Action, ButtonAction, Config, KnobFunction, Pacing, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
     VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS,
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
@@ -549,12 +549,22 @@ impl App {
                     ui.radio_value(&mut r.tcix, TcixMode::On, "on");
                 });
                 ui.end_row();
+                ui.label("Pacing").on_hover_text(
+                    "For a radio that can't keep up with the dial, e.g. one reached over a network",
+                );
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut r.pacing, Pacing::Off, "off");
+                    ui.radio_value(&mut r.pacing, Pacing::Auto, "auto");
+                    ui.radio_value(&mut r.pacing, Pacing::On, "on");
+                });
+                ui.end_row();
                 ui.label("Receiver (trx)");
                 ui.add(egui::DragValue::new(&mut r.trx).range(0..=7));
                 ui.end_row();
             });
         ui.add_space(6.0);
-        ui.label("auto: uses TCI-X if the server offers it, otherwise plain TCI.");
+        ui.label("TCI-X auto: uses TCI-X if the server offers it, otherwise plain TCI.");
+        ui.label("Pacing auto: sends every step while the radio keeps up, and waits for its reply once it falls behind.");
     }
 
     fn log_tab(&mut self, ui: &mut egui::Ui) {

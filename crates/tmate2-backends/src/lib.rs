@@ -2,6 +2,7 @@
 //! keeps the shared [`tmate2_core::RadioState`] up to date.
 
 pub mod login;
+pub mod pacing;
 pub mod tci;
 pub mod tci_client;
 

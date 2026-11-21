@@ -362,8 +362,8 @@ impl Engine {
         if let Command::Vfo { trx, .. } = cmd {
             state.trx_mut(trx).vfo_guard_until = Some(now + VFO_GUARD);
         }
-        if let (true, Some(name)) = (cmd.knob_value(), cmd.wire_name()) {
-            state.guard(name, now + KNOB_GUARD);
+        if let (true, Some(target)) = (cmd.knob_value(), cmd.target()) {
+            state.guard(target, now + KNOB_GUARD);
         }
         out.push(cmd);
     }
@@ -1910,9 +1910,14 @@ mod tests {
             vec![Command::AfGain { trx: 0, pct: 31 }]
         );
         // The radio's reports of it are ignored while the knob is in use.
-        assert!(s.guarded("af_gain", now + Duration::from_millis(100)));
-        assert!(!s.guarded("af_gain", now + Duration::from_secs(2)));
-        assert!(!s.guarded("squelch", now));
+        let g = |s: &RadioState, name: &str, t: Instant| s.guarding(name, &["0".into()], t).is_some();
+        assert!(g(&s, "af_gain", now + Duration::from_millis(100)));
+        assert!(!g(&s, "af_gain", now + Duration::from_secs(2)));
+        assert!(!g(&s, "squelch", now));
+        assert!(
+            s.guarding("af_gain", &["1".into()], now).is_none(),
+            "RX2 not guarded"
+        );
         // At the top of its travel there's nothing more to send.
         s.trx[0].af_gain = Some(100);
         assert!(e.handle(turn(Encoder::E1, 2), now, &mut s).is_empty());

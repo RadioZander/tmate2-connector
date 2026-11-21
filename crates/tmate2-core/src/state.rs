@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::command::Target;
 use crate::manifest::{CapKind, Manifest};
 
 /// Operating mode, normalised across backends.
@@ -262,7 +263,7 @@ pub struct RadioState {
     pub alert_seq: u64,
     /// Commands (by wire name) whose reports from the radio are ignored
     /// until the time given, because a knob here is setting them right now.
-    pub guards: HashMap<&'static str, Instant>,
+    pub guards: HashMap<Target, Instant>,
 }
 
 impl RadioState {
@@ -288,15 +289,20 @@ impl RadioState {
         t.vfo[vfo] = hz;
     }
 
-    /// Ignore the radio's reports of `command` until `until`: a knob here is
+    /// Ignore the radio's reports of `target` until `until`: a knob here is
     /// setting it, and the echo of an earlier click would undo later ones.
-    pub fn guard(&mut self, command: &'static str, until: Instant) {
-        self.guards.insert(command, until);
+    pub fn guard(&mut self, target: Target, until: Instant) {
+        self.guards.insert(target, until);
     }
 
-    /// Reports of `command` are being ignored (see [`RadioState::guard`]).
-    pub fn guarded(&self, command: &str, now: Instant) -> bool {
-        self.guards.get(command).is_some_and(|until| now < *until)
+    /// The guard (see [`RadioState::guard`]) that has a server message
+    /// `name:args;` ignored now, if any. Only the transceiver being set is
+    /// guarded: RX2's reports still land while RX1's knob turns.
+    pub fn guarding(&self, name: &str, args: &[String], now: Instant) -> Option<Target> {
+        self.guards
+            .iter()
+            .find(|(t, until)| now < **until && t.reported_by(name, args))
+            .map(|(t, _)| *t)
     }
 
     /// The name to send for `mode`: the server's own spelling where its

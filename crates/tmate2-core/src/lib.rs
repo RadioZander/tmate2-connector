@@ -15,7 +15,7 @@ pub mod manifest;
 pub mod render;
 pub mod state;
 
-pub use command::Command;
+pub use command::{Command, Target};
 pub use config::Config;
 pub use engine::Engine;
 pub use manifest::Manifest;
