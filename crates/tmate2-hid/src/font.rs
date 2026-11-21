@@ -23,7 +23,12 @@ const G: u8 = 1 << 6;
 /// Glyph for `ch`, or `None` if it can't be shown on seven segments.
 /// Letters are case-insensitive; each uses whichever case's shape reads best
 /// on seven segments (b, d, n, r, t are lower-case shapes; X and K look like H).
+/// The exception is `o`: lower case is the small o in the lower half, so it
+/// can't be read as a zero; `O` is the full-height shape.
 pub fn glyph(ch: char) -> Option<u8> {
+    if ch == 'o' {
+        return Some(C | D | E | G);
+    }
     Some(match ch.to_ascii_uppercase() {
         ' ' => 0,
         '0' | 'O' => A | B | C | D | E | F,
@@ -73,5 +78,12 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![6, 2, 5, 5, 4, 5, 6, 3, 7, 6]);
         assert_eq!(glyph('~'), None);
+    }
+
+    #[test]
+    fn small_o_is_not_a_zero() {
+        assert_eq!(glyph('o'), Some(C | D | E | G));
+        assert_eq!(glyph('O'), glyph('0'));
+        assert_ne!(glyph('o'), glyph('0'));
     }
 }

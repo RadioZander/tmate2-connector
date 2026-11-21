@@ -368,6 +368,20 @@ impl KnobFunction {
         !Self::UNLABELLED.contains(&self)
     }
 
+    /// For a function without an LCD label: the name the small 3-digit
+    /// readout holds while a knob rests on it, and whether the minus segment
+    /// to its left is lit with it. MON is "-non" ("m" can't be drawn on
+    /// seven segments).
+    pub fn readout_name(self) -> Option<(&'static str, bool)> {
+        match self {
+            KnobFunction::RxVol => Some(("AF", false)),
+            KnobFunction::MonVol => Some(("non", true)),
+            KnobFunction::CwSpeed => Some(("SPd", false)),
+            KnobFunction::TuneDrive => Some(("tdr", false)),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             KnobFunction::Vol => "vol",

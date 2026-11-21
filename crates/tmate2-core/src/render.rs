@@ -178,12 +178,21 @@ pub fn render(
     if state.radio_state.as_deref().is_some_and(|r| r != "connected") {
         on("err");
     }
-    // Knob labels. Functions without a label of their own light only E1 / E2.
-    on("e1");
+    // Knob labels. Functions without a label of their own light only E1 / E2,
+    // and on receive the small readout holds the name of one of them. If both
+    // knobs are on such functions, only the E marker of the knob named there
+    // stays lit, so the name can't be taken for the other knob's.
+    let named = if transmitting { None } else { view.readout_knob() };
+    let marker = |k: usize| view.knob(k).has_lcd_label() || named.is_none_or(|n| n == k);
+    if marker(0) {
+        on("e1");
+    }
     if view.e1.has_lcd_label() {
         on(&format!("e1.{}", view.e1.name()));
     }
-    on("e2");
+    if marker(1) {
+        on("e2");
+    }
     match view.e2 {
         KnobFunction::Width => {
             on("e2.high");
@@ -221,6 +230,15 @@ pub fn render(
         for i in 1..=bars_for_dbm(dbm) {
             on(&format!("bar.{i}"));
         }
+    }
+    // A knob resting on a function without an LCD label: the readout holds
+    // its name instead, so it's clear which one the knob is on.
+    if let Some((name, minus)) = named.and_then(|k| view.knob(k).readout_name()) {
+        if minus {
+            on("smeter.minus");
+        }
+        map.draw_text(out, "smeter", name);
+    } else if let Some(dbm) = trx.rx_dbm {
         match cfg.readout {
             Readout::Dbm => {
                 let v = dbm.round() as i32;
@@ -249,6 +267,7 @@ mod tests {
             e1: KnobFunction::Vol,
             e2: KnobFunction::Shift,
             flash: None,
+            last_knob: 0,
         }
     }
 
@@ -448,5 +467,120 @@ mod tests {
         assert_eq!(swr_text(1.24), "1_2");
         assert_eq!(swr_text(2.96), "3_0");
         assert_eq!(swr_text(12.0), "Hi");
+    }
+
+    /// The small readout's digits show exactly `text`.
+    fn readout_is(map: &SegmentMap, out: &OutputReport, text: &str) -> bool {
+        let mut want = OutputReport::default();
+        map.draw_text(&mut want, "smeter", text);
+        (1..=3).all(|d| {
+            "abcdefg".chars().all(|seg| {
+                let a = map.get(&format!("smeter.{d}.{seg}")).unwrap();
+                out.segment(a) == want.segment(a)
+            })
+        })
+    }
+
+    #[test]
+    fn readout_names_a_knob_on_a_function_without_a_label() {
+        let map = SegmentMap::builtin();
+        let cfg = Config::default();
+        let mut s = RadioState {
+            connected: true,
+            ..Default::default()
+        };
+        s.trx_mut(0).rx_dbm = Some(-73.0);
+        let mut out = OutputReport::default();
+        let lit = |out: &OutputReport, n: &str| out.segment(map.get(n).unwrap());
+        for (f, name, minus) in [
+            (KnobFunction::RxVol, "AF", false),
+            (KnobFunction::MonVol, "non", true),
+            (KnobFunction::CwSpeed, "SPd", false),
+            (KnobFunction::TuneDrive, "tdr", false),
+        ] {
+            let v = View { e1: f, ..view() };
+            render(&s, &v, &cfg.display, &map, &mut out);
+            assert!(readout_is(&map, &out, name), "{f:?} shows {name}");
+            assert_eq!(lit(&out, "smeter.minus"), minus, "{f:?} minus");
+            assert!(!lit(&out, "unit.dbm"), "{f:?}: no dBm unit");
+            assert!(lit(&out, "bar.1"), "{f:?}: the S-meter bars still work");
+        }
+        // On a labelled function: -73 dBm as usual.
+        render(&s, &view(), &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "73") && lit(&out, "smeter.minus") && lit(&out, "unit.dbm"));
+        // Both knobs unlabelled: the one touched last.
+        let both = View {
+            e1: KnobFunction::CwSpeed,
+            e2: KnobFunction::TuneDrive,
+            last_knob: 1,
+            ..view()
+        };
+        render(&s, &both, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "tdr"));
+        // Only E2's marker: the name is E2's, and E1's function isn't shown.
+        assert!(lit(&out, "e2") && !lit(&out, "e1"));
+        let both_e1 = View {
+            last_knob: 0,
+            ..both.clone()
+        };
+        render(&s, &both_e1, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "SPd") && lit(&out, "e1") && !lit(&out, "e2"));
+        // E2 touched last but labelled: E1's name.
+        let e1_only = View {
+            e1: KnobFunction::CwSpeed,
+            last_knob: 1,
+            ..view()
+        };
+        render(&s, &e1_only, &cfg.display, &map, &mut out);
+        assert!(readout_is(&map, &out, "SPd"));
+        // E2 on a labelled function keeps its marker and label.
+        assert!(lit(&out, "e1") && lit(&out, "e2") && lit(&out, "e2.shift"));
+        // Transmitting: watts as before.
+        s.trx_mut(0).tx = true;
+        s.trx_mut(0).tx_power_w = Some(50.0);
+        render(
+            &s,
+            &View {
+                e1: KnobFunction::CwSpeed,
+                ..view()
+            },
+            &cfg.display,
+            &map,
+            &mut out,
+        );
+        assert!(readout_is(&map, &out, "50") && lit(&out, "unit.w"));
+        // No name on transmit, so both markers stay lit.
+        render(&s, &both, &cfg.display, &map, &mut out);
+        assert!(lit(&out, "e1") && lit(&out, "e2"));
+    }
+
+    #[test]
+    fn last_knob_follows_turns_and_pushes() {
+        use crate::engine::Engine;
+        use tmate2_hid::{Button, Encoder, InputEvent};
+        let mut e = Engine::new(Config::default());
+        let mut s = RadioState::default();
+        let now = std::time::Instant::now();
+        assert_eq!(e.view(now).last_knob, 0);
+        e.handle(
+            InputEvent::Turned {
+                encoder: Encoder::E2,
+                delta: 2,
+            },
+            now,
+            &mut s,
+        );
+        assert_eq!(e.view(now).last_knob, 1);
+        e.handle(InputEvent::Pressed(Button::E1Push), now, &mut s);
+        assert_eq!(e.view(now).last_knob, 0);
+        e.handle(
+            InputEvent::Turned {
+                encoder: Encoder::Main,
+                delta: 1,
+            },
+            now,
+            &mut s,
+        );
+        assert_eq!(e.view(now).last_knob, 0, "the main knob doesn't count");
     }
 }

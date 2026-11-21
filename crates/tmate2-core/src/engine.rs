@@ -54,6 +54,29 @@ pub struct View {
     pub e2: KnobFunction,
     /// Short text to show on the main display instead of the frequency.
     pub flash: Option<String>,
+    /// The knob touched last: 0 = E1, 1 = E2.
+    pub last_knob: usize,
+}
+
+impl View {
+    /// The knob (0 = E1, 1 = E2) on a function without an LCD label whose
+    /// name the small readout holds: the last-touched knob if its function
+    /// has no label, else the other.
+    pub fn readout_knob(&self) -> Option<usize> {
+        let last = self.last_knob.min(1);
+        [last, 1 - last]
+            .into_iter()
+            .find(|k| !self.knob(*k).has_lcd_label())
+    }
+
+    /// Knob `k`'s function (0 = E1, 1 = E2).
+    pub fn knob(&self, k: usize) -> KnobFunction {
+        if k == 0 {
+            self.e1
+        } else {
+            self.e2
+        }
+    }
 }
 
 /// What a button keys for as long as it is held.
@@ -104,6 +127,8 @@ pub struct Engine {
     other_rx: bool,
     /// The last `RadioState::alert_seq` shown.
     alert_seen: u64,
+    /// The knob touched last (0 = E1, 1 = E2), for the small readout.
+    last_knob: usize,
 }
 
 impl Engine {
@@ -129,6 +154,7 @@ impl Engine {
             fast: false,
             other_rx: false,
             alert_seen: 0,
+            last_knob: 0,
         }
     }
 
@@ -212,6 +238,7 @@ impl Engine {
                 .as_ref()
                 .filter(|(_, at)| now.duration_since(*at) < flash_for)
                 .map(|(t, _)| t.clone()),
+            last_knob: self.last_knob,
         }
     }
 
@@ -223,6 +250,11 @@ impl Engine {
         state.idle_closed = false;
         match ev {
             InputEvent::Turned { encoder, delta } => {
+                match encoder {
+                    Encoder::E1 => self.last_knob = 0,
+                    Encoder::E2 => self.last_knob = 1,
+                    Encoder::Main => {}
+                }
                 // E1 / E2 resting on the edge of a detent rock a count either
                 // way when pushed (+1, -1, ...). Only a whole detent is a
                 // turn: anything less must not cancel or lock out the push.
@@ -247,6 +279,11 @@ impl Engine {
                 }
             }
             InputEvent::Pressed(b) => {
+                match b {
+                    Button::E1Push => self.last_knob = 0,
+                    Button::E2Push => self.last_knob = 1,
+                    _ => {}
+                }
                 // A knob push right after turning that knob is almost always
                 // accidental: ignore it.
                 let lockout = Duration::from_millis(self.cfg.buttons.push_lockout_ms);

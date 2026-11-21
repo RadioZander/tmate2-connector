@@ -79,15 +79,16 @@ fast_multiplier = 10
 
 # The bottom row of the LCD shows what each knob is set to. Push the knob to
 # step through its functions (see e1_push / e2_push below).
-#   E1 can be: vol, sql, rfg, drv, nr, nb, an
+#   E1 can be: vol, rfg, sql, drv, nr, nb, an
 #   E2 can be: high, low, width, shift, rit, xit
 #   (width has no label of its own, so HIGH and LOW light together)
-# Either knob can also have these, which have no LCD label (only the value
-# shown on the main display tells you which one is selected):
-#   rx_vol     the controlled receiver's own volume (Thetis RX1 / RX2 AF)
-#   mon_vol    TX monitor volume
-#   cw_speed   CW keyer speed (WPM)
-#   tune_drive drive used while tuning
+# Either knob can also have these, which have no label on the bottom row.
+# While a knob rests on one, the small readout shows its name in place of
+# the signal reading (the name in brackets):
+#   rx_vol     the controlled receiver's own volume (Thetis RX1 / RX2 AF)  (AF)
+#   mon_vol    TX monitor volume  (-non)
+#   cw_speed   CW keyer speed (WPM)  (SPd)
+#   tune_drive drive used while tuning  (tdr)
 # "start" is the function each knob is on when the connector starts.
 [e1]
 functions = ["vol", "rfg", "sql", "drv", "nr", "nb", "an"]
