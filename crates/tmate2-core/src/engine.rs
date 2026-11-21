@@ -223,10 +223,22 @@ impl Engine {
         state.idle_closed = false;
         match ev {
             InputEvent::Turned { encoder, delta } => {
-                self.last_turn[enc_index(encoder)] = Some(now);
-                // Turning a knob cancels a push of that same knob in progress.
-                if let Some(p) = self.pressed.get_mut(&push_of(encoder)) {
-                    p.done = true;
+                // E1 / E2 resting on the edge of a detent rock a count either
+                // way when pushed (+1, -1, ...). Only a whole detent is a
+                // turn: anything less must not cancel or lock out the push.
+                let whole_detent = match encoder {
+                    Encoder::Main => true,
+                    Encoder::E1 | Encoder::E2 => {
+                        let k = if encoder == Encoder::E1 { 0 } else { 1 };
+                        (self.e_accum[k] + delta) / self.cfg.tuning.counts_per_detent != 0
+                    }
+                };
+                if whole_detent {
+                    self.last_turn[enc_index(encoder)] = Some(now);
+                    // Turning a knob cancels a push of that same knob in progress.
+                    if let Some(p) = self.pressed.get_mut(&push_of(encoder)) {
+                        p.done = true;
+                    }
                 }
                 match encoder {
                     Encoder::Main => self.tune(delta, now, state, &mut out),
@@ -2063,5 +2075,41 @@ mod tests {
         // A server without control: nothing to send.
         let mut plain = ic7100(&[]);
         assert!(act(&mut e, Action::Control, &mut plain).is_empty());
+    }
+
+    /// E1 resting on the edge of a detent rocks a count either way around a
+    /// push (seen on the hardware): every push must still step the function.
+    #[test]
+    fn knob_rocking_on_a_detent_edge_does_not_eat_pushes() {
+        let mut e = Engine::new(Config::default());
+        let mut s = connected();
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let start = e.view(t0).e1;
+        let mut t = 0;
+        for i in 0..4u64 {
+            // As logged: +1 and -1 just before the press, +1 / -1 while it is down.
+            e.handle(turn(Encoder::E1, 1), ms(t), &mut s);
+            e.handle(turn(Encoder::E1, -1), ms(t + 16), &mut s);
+            e.handle(InputEvent::Pressed(Button::E1Push), ms(t + 40), &mut s);
+            e.handle(turn(Encoder::E1, 1), ms(t + 100), &mut s);
+            e.handle(turn(Encoder::E1, -1), ms(t + 180), &mut s);
+            e.handle(InputEvent::Released(Button::E1Push), ms(t + 200), &mut s);
+            e.tick(ms(t + 210), &mut s);
+            assert_ne!(e.view(ms(t + 210)).e1, start, "push {i} stepped");
+            t += 800;
+        }
+        let cfg = Config::default();
+        assert_eq!(e.view(ms(t)).e1, cfg.e1.functions[4 % cfg.e1.functions.len()]);
+        // A whole detent just before a push still locks the push out.
+        let mut e = Engine::new(Config::default());
+        e.handle(turn(Encoder::E1, 2), ms(10_000), &mut s);
+        e.handle(InputEvent::Pressed(Button::E1Push), ms(10_050), &mut s);
+        e.handle(InputEvent::Released(Button::E1Push), ms(10_150), &mut s);
+        assert_eq!(
+            e.view(ms(10_200)).e1,
+            cfg.e1.functions[0],
+            "accidental push ignored"
+        );
     }
 }
