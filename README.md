@@ -17,18 +17,73 @@ radios and SDR software over:
 
 ## Status
 
-Early development. What exists today:
-
 | Part | State |
 |---|---|
-| `tmate2-hid` driver (input reports, encoders, buttons, LCD, backlight, LEDs) | working; input, output and the full LCD map confirmed on HW1.1 / FW1.5 |
-| `tmate2-probe` bring-up tool | working |
-| `tmate2` connector: mapping engine, commented TOML config, LCD renderer | working (headless) |
-| TCI backend with optional TCI-X (`auto`) | working; tested with Thetis. With TCI-X it sends only what the server's manifest lists, uses its extensions (AF / RF gain, squelch, filter presets, band stack, dial lock, notch, tuner) and skips knob functions the radio can't do. Logs in when the server asks (TCI-X §4.3), takes part in its one-operator control (§4.4: a `control` button action, refusals flashed on the LCD, no reconnecting by itself after an idle close). Modes go by the server's own names, VOL uses the server's `volume` where it lists one (KADRAD's relay) and the radio's AF gain otherwise, and the ATT, PRE, ANT, LP and ERR lamps follow the radio. Tried on an Icom IC-7100 on kadrad-hub, directly and through KADRAD's relay (HW1.1 / FW1.3); login and control only against a fake server in the tests |
-| CAT backends, HMI emulation, GUI, packaging | planned |
+| `tmate2-hid` driver: input reports, encoders, buttons, LCD, backlight, LEDs | Working. The full LCD map is confirmed on HW1.1 / FW1.5, and the inputs on FW1.3. |
+| `tmate2` connector: a window or `--headless`, mapping engine, LCD renderer, commented TOML config that the window edits | Working |
+| TCI backend | Working. Tested with Thetis on Windows and piHPSDR on Linux, both with an ANAN-G2. |
+| Optional TCI-X extensions | Working. Tried on an Icom IC-7100 through kadrad-hub. Login and control have been tried only against a test server so far. |
+| `tmate2-probe` hardware tool | Working |
+| CAT backends, HMI emulation, installers | Planned |
 
 See [docs/hardware-bringup.md](docs/hardware-bringup.md) to help confirm the
 hardware map on your own TMATE-2.
+
+## What it does
+
+### Knobs
+
+- **The main knob** tunes the active VFO.
+  - The tuning step can be changed from a button, and the digit it changes is underlined.
+  - The knob speeds up when you spin it fast.
+  - A `fast` button multiplies the step.
+- **E1** steps through VOL, RFG, SQL, DRV, NR, NB and AN when you push it.
+- **E2** steps through HIGH, LOW, WIDTH, SHIFT, RIT and XIT.
+- **Holding a knob's push** switches its current function on or off, or puts the mode's default filter back.
+- **Either knob can also have four functions with no label on the LCD:** the receiver's own volume, monitor volume, CW speed and tune drive. While a knob rests on one, the small readout shows its name: AF, -non, SPd or tdr.
+
+### Buttons
+
+Each of F1–F6 and each knob push has a **tap** action and a **hold**
+action. Holding a stepping action repeats it. The actions are:
+
+- **Bands and VFOs:** band up / down, VFO A / B, A→B, B→A and swap.
+- **Split, RIT and XIT:** split, RIT and XIT on or off, and clear one or both.
+- **Lock.**
+- **Mode:** step through the modes, or go straight to one.
+- **Filter:** wider, narrower, or back to the mode's default.
+- **AGC:** step through the AGC modes, or go straight to one.
+- **Noise and filters:** NR, NB, auto notch, manual notch, APF, binaural and squelch.
+- **Audio:** the master mute, RX1 and RX2 mutes, and the transmit monitor.
+- **Receivers:** RX2 on or off, and the sub-receiver. The knobs can also be switched to control RX2.
+- **Transmit:** MOX, push-to-talk (only while held), tune, and tune while held.
+- **Other:** start / stop the radio, and step through the backlight colours.
+- **Any TCI command:** a button can send raw TCI text.
+
+The configuration file lists every action with a comment.
+
+### Display
+
+The LCD works like a radio's front panel:
+
+- **Main display:** the frequency to the hertz.
+- **Mode and status:** the mode, VFO A / B, RX / TX, NR and NB.
+- **Knobs:** the labels of each knob's function.
+- **S meter:** the bargraph with its scale, and the signal in -dBm or S units.
+- **On transmit:** the S scale switches off. The bargraph shows power or SWR (1.8:1 at S9), and the readout shows watts or SWR (`1_2` means 1.2:1).
+- **Backlight:** separate colours for receive, transmit and no connection.
+
+The window shows a live copy of the LCD, and you can change all the settings there.
+
+### Radio connection
+
+- **TCI** (Expert Electronics' standard) works by itself. Only standard TCI commands are used.
+- **Pacing** (`pacing = "auto"`) is for a radio that can't keep up with the knob, such as one reached over a network. Once the radio's replies start to fall behind, the connector waits for each one before sending the newest value. While the radio keeps up, nothing is held back.
+- **TCI-X** (`tcix = "auto"`), by Mike G0KAD, is used when the server offers it.
+  - The connector sends only the commands the server says it accepts, and skips knob functions the radio can't do.
+  - It uses the radio's own AF and RF gain, filter presets, band stack and antenna tuner.
+  - It logs in if the server asks, and takes part in the server's one-operator control.
+  - The ATT, PRE, ANT, LP and ERR lamps follow the radio.
 
 ## Download
 
@@ -61,10 +116,15 @@ screen. The first run writes a commented configuration file and logs where.
 Install Rust from <https://rustup.rs>.
 
 - **Windows:** needs the Visual Studio C++ Build Tools.
-- **Linux:** `sudo apt install libudev-dev pkg-config`, then install
+- **Linux:** `sudo apt install libudev-dev pkg-config`. For the window you also
+  need the X11, Wayland and OpenGL development packages: on Debian / Ubuntu,
+  `libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev
+  libxrandr-dev libxi-dev`. A headless-only build
+  (`cargo build --release -p tmate2-app --no-default-features`) doesn't need
+  them. Install
   [`packaging/linux/50-tmate2.rules`](packaging/linux/50-tmate2.rules) so you
   can open the device without root.
-- **macOS:** works out of the box.
+- **macOS:** builds with no extra packages, but it hasn't been tried on a TMATE-2.
 
 ```sh
 cargo build --release
@@ -78,9 +138,16 @@ cargo run -p tmate2-app -- -v         # run the connector (writes a commented
                                       # config on first run and says where)
 ```
 
-The configuration is plain, commented TOML: radio connection, display,
-tuning steps and acceleration, the E1 / E2 knob functions, and a tap and a
-hold action for every button and knob push.
+The configuration is plain, commented TOML. It covers:
+
+- the radio connection
+- the display
+- tuning steps and acceleration
+- the E1 / E2 knob functions
+- the default filter for each mode
+- a tap and a hold action for every button and knob push
+
+Saving from the window keeps your own comments.
 
 ## Licence
 
