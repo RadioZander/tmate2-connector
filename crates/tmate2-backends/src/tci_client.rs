@@ -23,8 +23,9 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const LOGIN_RETRY_DELAY: Duration = Duration::from_secs(30);
 const TCIX_TIMEOUT: Duration = Duration::from_secs(2);
 const IDLE_POLL: Duration = Duration::from_millis(250);
-/// Periodic meter reports, not logged line by line at -v.
-const METERS: [&str; 3] = ["rx_sensors", "rx_channel_sensors", "tx_sensors"];
+/// Periodic meter reports (TCI's, and TCI-X `meter`), not logged line by
+/// line at -v.
+const METERS: [&str; 4] = ["rx_sensors", "rx_channel_sensors", "tx_sensors", "meter"];
 /// Why a connection ended, which decides when to try again.
 #[derive(Debug, PartialEq)]
 enum Ended {
