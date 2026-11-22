@@ -159,10 +159,11 @@ ANAN-G2. The original g0orx/pihpsdr has no TCI, only rigctl on port 19090.
   Volume, NR / NB / ANF, squelch, drive, filter and the rest changed in
   piHPSDR's own window are not, and NR / NB / ANF aren't echoed. Reads are
   answered at once, so read-before-write and the poll cover this.
-- **Read bugs (to report upstream):** the `rx_filter_band` read gives the
+- **Read bugs (reported upstream):** the `rx_filter_band` read gives the
   mode's preset, not the edges in use, so the connector never reads the
-  filter. `rx_nb_enable` reads back SNB, not NB, so the NB lamp follows SNB
-  and turning NB off can take a double press.
+  filter (dl1ycf/pihpsdr#157). `rx_nb_enable` reads back SNB, not NB, so
+  the NB lamp follows SNB and turning NB off can take a double press
+  (dl1ycf/pihpsdr#158).
 - **Echo timing:** on the same machine, 0–6 ms, so `pacing = "auto"`
   never engages. Not measured over a network.
 - **Unlabelled functions:** `cw_keyer_speed` works. `tune_drive` works but
