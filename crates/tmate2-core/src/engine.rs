@@ -810,8 +810,8 @@ impl Engine {
             .map(|n| Target::of_trx(n, t)),
         );
         for target in shown.flatten() {
-            if !state.pending.contains_key(&target) {
-                out.extend(state.read(target, now));
+            if !state.pending.contains_key(&target) && state.read(target, now).is_some() {
+                out.push(Command::Poll(target));
             }
         }
     }
@@ -1395,9 +1395,10 @@ pub(crate) mod tests {
     fn settle(e: &mut Engine, mut cmds: Vec<Command>, now: Instant, s: &mut RadioState) -> Vec<Command> {
         let mut out = Vec::new();
         loop {
-            let asked = cmds.iter().any(|c| matches!(c, Command::Query(_)));
+            let read = |c: &Command| matches!(c, Command::Query(_) | Command::Poll(_));
+            let asked = cmds.iter().any(read);
             echo(s, &cmds, now);
-            out.extend(cmds.into_iter().filter(|c| !matches!(c, Command::Query(_))));
+            out.extend(cmds.into_iter().filter(|c| !read(c)));
             if !asked {
                 return out;
             }
@@ -1417,7 +1418,7 @@ pub(crate) mod tests {
     pub(crate) fn echo(s: &mut RadioState, cmds: &[Command], now: Instant) {
         for c in cmds {
             let t = match c {
-                Command::Query(t) => *t,
+                Command::Query(t) | Command::Poll(t) => *t,
                 _ => {
                     s.sent(c);
                     s.apply(c);
@@ -1571,7 +1572,7 @@ pub(crate) mod tests {
         let next = e.tick(later, &mut s);
         assert_eq!(next[0], Command::Volume { db: -8.0 });
         assert!(
-            next[1..].iter().all(|c| matches!(c, Command::Query(_))),
+            next[1..].iter().all(|c| matches!(c, Command::Poll(_))),
             "the poll"
         );
     }
@@ -1591,7 +1592,7 @@ pub(crate) mod tests {
         assert!(e
             .tick(at(100), &mut s)
             .iter()
-            .all(|c| matches!(c, Command::Query(_))));
+            .all(|c| matches!(c, Command::Query(_) | Command::Poll(_))));
         // No answer: the click goes from the last report…
         assert!(e.tick(at(600), &mut s).contains(&Command::Volume { db: -19.0 }));
         // …and the next time doesn't wait.
@@ -1609,7 +1610,7 @@ pub(crate) mod tests {
         let names = |cmds: &[Command]| -> Vec<&str> {
             cmds.iter()
                 .filter_map(|c| match c {
-                    Command::Query(t) => Some(t.name),
+                    Command::Poll(t) => Some(t.name),
                     _ => None,
                 })
                 .collect()

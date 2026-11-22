@@ -419,7 +419,7 @@ pub fn encode(cmd: &Command) -> Option<String> {
         Command::EnableTxMeters => "tx_sensors_enable:true,200;".to_string(),
         // Standard TCI's read form: the command with only its receiver (and
         // VFO, or channel) and no value.
-        Command::Query(t) => match (t.name, t.trx, t.vfo) {
+        Command::Query(t) | Command::Poll(t) => match (t.name, t.trx, t.vfo) {
             ("rx_volume", Some(trx), _) => format!("rx_volume:{trx},0;"),
             ("rx_channel_enable", Some(trx), _) => format!("rx_channel_enable:{trx},1;"),
             (name, Some(trx), Some(vfo)) => format!("{name}:{trx},{vfo};"),

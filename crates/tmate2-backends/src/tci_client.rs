@@ -2,6 +2,7 @@
 //! commands, negotiates TCI-X if configured, logs in when the server asks
 //! (TCI-X §4.3), and reconnects on failure.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -11,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use tmate2_core::config::{RadioConfig, TcixMode, PASSWORD_ENV};
-use tmate2_core::{Command, RadioState};
+use tmate2_core::{Command, RadioState, Target};
 
 use crate::pacing::Pacer;
 use crate::tci::{self, TcixNegotiation};
@@ -155,10 +156,19 @@ async fn serve(
     let mut cfg_alive = true;
     let mut user: Option<String> = None;
     let mut pacer = Pacer::new(cfg.pacing);
+    // Values read by the once-a-second poll and not yet answered: their
+    // answers, like the reads, are left out of the -v log unless they
+    // change something.
+    let mut polled: HashSet<Target> = HashSet::new();
 
     macro_rules! send_or_end {
         ($line:expr) => {
-            if let Err(e) = send(&mut tx, $line).await {
+            if let Err(e) = send(&mut tx, $line, true).await {
+                return Ended::Closed(e);
+            }
+        };
+        ($line:expr, $logged:expr) => {
+            if let Err(e) = send(&mut tx, $line, $logged).await {
                 return Ended::Closed(e);
             }
         };
@@ -192,8 +202,14 @@ async fn serve(
                 let now = Instant::now();
                 // With -v: what came back, so the echoes can be read against
                 // the "TCI >" lines. The meter reports, several a second,
-                // are left out.
-                if !tci::split(&text).all(|m| METERS.contains(&m.name.as_str())) {
+                // are left out, and so are answers to the poll that change
+                // nothing.
+                let logged = {
+                    let s = state.lock().unwrap();
+                    tci::split(&text)
+                        .any(|m| !METERS.contains(&m.name.as_str()) && !quiet_poll_answer(&s, &mut polled, &m))
+                };
+                if logged {
                     debug!("TCI < {}", text.trim());
                 }
                 let mut out: Vec<String> = Vec::new();
@@ -287,26 +303,26 @@ async fn serve(
                     continue;
                 }
                 let now = Instant::now();
-                let lines: Vec<String> = {
+                let lines = {
                     let mut s = state.lock().unwrap();
                     let go: Vec<Command> = newest(first, cmds, &s)
                         .into_iter()
                         .filter_map(|c| pacer.offer(c, now))
                         .collect();
-                    lines_for(&go, &mut s)
+                    lines_for(&go, &mut s, &mut polled)
                 };
-                for line in lines {
-                    send_or_end!(line);
+                for (line, logged) in lines {
+                    send_or_end!(line, logged);
                 }
             }
             _ = pace_wait => {
-                let lines: Vec<String> = {
+                let lines = {
                     let mut s = state.lock().unwrap();
                     let go = pacer.due(Instant::now());
-                    lines_for(&go, &mut s)
+                    lines_for(&go, &mut s, &mut polled)
                 };
-                for line in lines {
-                    send_or_end!(line);
+                for (line, logged) in lines {
+                    send_or_end!(line, logged);
                 }
             }
             changed = cfg_rx.changed(), if cfg_alive => {
@@ -328,21 +344,46 @@ async fn serve(
     }
 }
 
-async fn send(tx: &mut futures_util::stream::SplitSink<Ws, Message>, line: String) -> Result<(), String> {
-    debug!("TCI > {line}");
+async fn send(
+    tx: &mut futures_util::stream::SplitSink<Ws, Message>,
+    line: String,
+    logged: bool,
+) -> Result<(), String> {
+    if logged {
+        debug!("TCI > {line}");
+    }
     tx.send(Message::text(line)).await.map_err(|e| e.to_string())
 }
 
-/// The lines for commands about to go, noting each as sent so its report
-/// can be told from an echo still on its way (see [`RadioState::sent`]).
-fn lines_for(cmds: &[Command], state: &mut RadioState) -> Vec<String> {
+/// The lines for commands about to go, each with whether -v logs it (not
+/// the poll's reads), noting each as sent so its report can be told from
+/// an echo still on its way (see [`RadioState::sent`]).
+fn lines_for(cmds: &[Command], state: &mut RadioState, polled: &mut HashSet<Target>) -> Vec<(String, bool)> {
     cmds.iter()
         .filter_map(|c| {
             let line = tci::encode_for(c, state)?;
             state.sent(c);
-            Some(line)
+            if let Command::Poll(t) = c {
+                polled.insert(*t);
+                return Some((line, false));
+            }
+            Some((line, true))
         })
         .collect()
+}
+
+/// `m` answers a poll read and says what we already have: not worth a log
+/// line. A poll answer that changes something is logged.
+fn quiet_poll_answer(state: &RadioState, polled: &mut HashSet<Target>, m: &tci::Msg) -> bool {
+    let Some(t) = Target::of_report(&m.name, &m.args) else {
+        return false;
+    };
+    if !polled.remove(&t) {
+        return false;
+    }
+    let mut probe = state.clone();
+    tci::apply(&mut probe, m);
+    probe == *state
 }
 
 /// Take `first` plus everything already queued, keeping only the newest VFO

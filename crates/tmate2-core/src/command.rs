@@ -203,6 +203,9 @@ pub enum Command {
     /// Ask the radio what `target` is now (standard TCI's read form, e.g.
     /// `rx_nr_enable:0;`), when it didn't report the result of a command.
     Query(Target),
+    /// The same read, sent by the once-a-second poll of what the LCD shows.
+    /// Not logged at -v, like the meter reports.
+    Poll(Target),
 }
 
 /// What a command sets: see [`Command::target`].
@@ -374,7 +377,7 @@ impl Command {
             Command::ControlRelease => "control_release",
             Command::EnableMeters => "rx_sensors_enable",
             Command::EnableTxMeters => "tx_sensors_enable",
-            Command::Raw(_) | Command::Query(_) => return None,
+            Command::Raw(_) | Command::Query(_) | Command::Poll(_) => return None,
         })
     }
 
@@ -433,7 +436,8 @@ impl Command {
             | C::EnableMeters
             | C::EnableTxMeters
             | C::Raw(_)
-            | C::Query(_) => None,
+            | C::Query(_)
+            | C::Poll(_) => None,
         }
     }
 
@@ -494,6 +498,7 @@ impl Command {
                 | Command::EnableTxMeters
                 | Command::Raw(_)
                 | Command::Query(_)
+                | Command::Poll(_)
         )
     }
 
@@ -605,7 +610,8 @@ impl RadioState {
             | Command::EnableMeters
             | Command::EnableTxMeters
             | Command::Raw(_)
-            | Command::Query(_) => {}
+            | Command::Query(_)
+            | Command::Poll(_) => {}
         }
     }
 
