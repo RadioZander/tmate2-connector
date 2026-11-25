@@ -1669,6 +1669,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn tcix_polls_only_what_the_manifest_lists() {
+        // The IC-7100 on kadrad-hub has no tune carrier and no base `lock`:
+        // reading them is refused (TCI-X B3), every poll.
+        let mut e = Engine::new(Config::default());
+        let mut s = ic7100(&[]);
+        let names: Vec<&str> = e
+            .tick(Instant::now(), &mut s)
+            .iter()
+            .filter_map(|c| match c {
+                Command::Poll(t) => Some(t.name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "vfo",
+                "modulation",
+                "rx_nr_enable",
+                "rx_nb_enable",
+                "rx_anf_enable",
+                "trx"
+            ]
+        );
+        // Nor read before a knob turns.
+        assert!(s
+            .read(Target::of_trx("tune", 0).unwrap(), Instant::now())
+            .is_none());
+        assert!(s
+            .read(Target::of_trx("drive", 0).unwrap(), Instant::now())
+            .is_some());
+    }
+
+    #[test]
     fn the_poll_follows_poll_ms() {
         let polls = |e: &mut Engine, s: &mut RadioState, at: Instant| {
             e.tick(at, s)
