@@ -60,16 +60,23 @@ enum Tab {
     Display,
     Radio,
     Log,
+    About,
 }
 
-const TABS: [(Tab, &str); 6] = [
+const TABS: [(Tab, &str); 7] = [
     (Tab::Buttons, "Buttons"),
     (Tab::Knobs, "Knobs"),
     (Tab::Tuning, "Tuning"),
     (Tab::Display, "Display"),
     (Tab::Radio, "Radio"),
     (Tab::Log, "Log"),
+    (Tab::About, "About"),
 ];
+
+/// Names eframe's storage folder (see `WindowState`).
+const APP_ID: &str = "tmate2-connector";
+/// The project's home, from the workspace's `Cargo.toml`.
+const REPO: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// Full mode: opens at a size where every tab fits without scrolling.
 const FULL_DEFAULT: egui::Vec2 = egui::vec2(620.0, 740.0);
@@ -211,7 +218,7 @@ pub fn run(
         viewport: egui::ViewportBuilder::default()
             .with_title("TMATE-2 Connector")
             // Names eframe's storage folder (see WindowState).
-            .with_app_id("tmate2-connector")
+            .with_app_id(APP_ID)
             .with_inner_size(FULL_DEFAULT)
             // The smaller mode's minimum, so a window last closed in mini
             // mode comes back at its size; the first frame sets full mode's.
@@ -821,6 +828,50 @@ impl App {
         ui.label("Pacing auto: sends every step while the radio keeps up, and waits for its reply once it falls behind.");
     }
 
+    fn about_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading(format!("TMATE-2 Connector {}", env!("CARGO_PKG_VERSION")));
+        ui.label("Connects the ELAD / Woodbox TMATE-2 to your radio over TCI.");
+        ui.label("By Zander M1YAP.");
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.hyperlink_to("GitHub", REPO);
+            ui.label("·");
+            ui.hyperlink_to("README", format!("{REPO}#readme"));
+            ui.label("·");
+            ui.hyperlink_to("Releases (newer versions)", format!("{REPO}/releases"));
+            ui.label("·");
+            ui.hyperlink_to("Report a problem", format!("{REPO}/issues"));
+        });
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("MIT licence.");
+            ui.hyperlink_to(
+                "Third-party notices",
+                format!("{REPO}/blob/main/THIRD-PARTY-NOTICES.md"),
+            );
+        });
+        ui.add_space(8.0);
+        ui.strong("On this computer");
+        // Selectable, so they can be copied when helping someone.
+        ui.label(format!("Configuration: {}", self.path.display()));
+        if let Some(dir) = eframe::storage_dir(APP_ID) {
+            ui.label(format!("Window sizes and places: {}", dir.display()));
+        }
+        ui.add_space(8.0);
+        ui.strong("Credits");
+        ui.label("TCI by Expert Electronics. TCI-X by Mike G0KAD.");
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "An independent project, not affiliated with or endorsed by ELAD, Woodbox Radio, \
+                 Expert Electronics, Apache Labs, or the Thetis, PowerSDR or piHPSDR projects. \
+                 Product names are used only to identify compatible hardware and software.",
+            )
+            .small()
+            .weak(),
+        );
+    }
+
     fn log_tab(&mut self, ui: &mut egui::Ui) {
         let lines: Vec<String> = self.shared.log.lock().unwrap().iter().cloned().collect();
         egui::ScrollArea::vertical()
@@ -1069,6 +1120,7 @@ impl App {
                     Tab::Display => self.display_tab(ui),
                     Tab::Radio => self.radio_tab(ui),
                     Tab::Log => self.log_tab(ui),
+                    Tab::About => self.about_tab(ui),
                 });
         });
     }
