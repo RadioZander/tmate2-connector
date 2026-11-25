@@ -13,3 +13,9 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
+scrypt = { version = "0.12.0", default-features = false }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+tmate2-hid = { path = "../tmate2-hid" }

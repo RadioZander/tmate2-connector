@@ -4,7 +4,8 @@
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Value};
 
 use tmate2_core::config::{
-    Action, Backend, ButtonAction, Config, KnobFunction, Readout, TcixMode, TxMeter, TxReadout, VolumeScale,
+    Action, Backend, ButtonAction, Config, KnobFunction, Pacing, Readout, TcixMode, TxMeter, TxReadout,
+    VolumeScale,
 };
 
 /// Set `table.key = v`, keeping the comments above the key and the spacing /
@@ -62,6 +63,14 @@ pub fn tcix_str(m: TcixMode) -> &'static str {
     }
 }
 
+pub fn pacing_str(p: Pacing) -> &'static str {
+    match p {
+        Pacing::Off => "off",
+        Pacing::Auto => "auto",
+        Pacing::On => "on",
+    }
+}
+
 pub fn readout_str(r: Readout) -> &'static str {
     match r {
         Readout::Dbm => "dbm",
@@ -87,6 +96,8 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     set(doc, "radio", "host", r.host.as_str());
     set(doc, "radio", "port", r.port as i64);
     set(doc, "radio", "tcix", tcix_str(r.tcix));
+    set(doc, "radio", "pacing", pacing_str(r.pacing));
+    set(doc, "radio", "poll_ms", r.poll_ms as i64);
     set(doc, "radio", "trx", r.trx as i64);
 
     let d = &c.display;

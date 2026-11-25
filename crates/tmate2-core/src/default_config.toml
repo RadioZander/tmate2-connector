@@ -15,8 +15,28 @@ port = 50001
 #   "auto" - ask the server; quietly fall back to plain TCI if it doesn't answer
 #   "on"   - like auto, but warn if the server doesn't support TCI-X
 tcix = "auto"
+# Pacing of the dial and knobs, for radios that can't keep up (a radio
+# reached over a network takes longer over a step than the dial does):
+#   "off"  - send every step at once
+#   "auto" - send at once while the radio keeps up; when its replies fall
+#            behind, wait for each before sending the newest value
+#   "on"   - always wait for the radio's reply (or 0.3 s) between values
+# For a very slow link, the numbers behind pacing can be overridden: see
+# "Pacing" in the README.
+pacing = "auto"
+# How often (ms) to read what the LCD shows from the radio (frequency, mode,
+# NR, NB, AN, LOCK, TX, TUNE), for software that doesn't report changes made
+# in its own window, such as piHPSDR. 0 = never; otherwise at least 100.
+poll_ms = 1000
 # Which receiver / transceiver the TMATE-2 controls (0 = the first).
 trx = 0
+# TCI-X login, for a server that asks for one (kadrad-hub on another
+# machine, say). Use the same account as your other client (KADRAD's panel)
+# so they share control of the radio. The password can come from the
+# TMATE2_TCIX_PASSWORD environment variable instead of this file; this
+# file is plain text, so keep it private if you put the password here.
+# user = "your-callsign"
+# password = ""
 
 [display]
 # LCD contrast in percent: 100 is darkest, 0 is faintest.
@@ -29,8 +49,8 @@ backlight_disconnected = [255, 120, 0]
 readout = "dbm"
 # How long (ms) a value you change with E1 / E2 is shown on the main display.
 flash_ms = 1500
-# How E1 VOL shows and steps the master volume:
-#   "percent" - 0 to 100, matching Thetis's Master AF (1 per click). Needs
+# How the volume knobs (vol, rx_vol, mon_vol) show and step the volume:
+#   "percent" - 0 to 100, matching Thetis's AF sliders (1 per click). Needs
 #               software that keeps fractions of a dB, like Thetis.
 #   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software.
 #               Use this with piHPSDR, which works in whole dB from -40 to 0.
@@ -65,18 +85,19 @@ fast_multiplier = 10
 
 # The bottom row of the LCD shows what each knob is set to. Push the knob to
 # step through its functions (see e1_push / e2_push below).
-#   E1 can be: vol, sql, rfg, drv, nr, nb, an
+#   E1 can be: vol, rfg, sql, drv, nr, nb, an
 #   E2 can be: high, low, width, shift, rit, xit
 #   (width has no label of its own, so HIGH and LOW light together)
-# Either knob can also have these, which have no LCD label (only the value
-# shown on the main display tells you which one is selected):
-#   rx_vol     the controlled receiver's own volume (Thetis RX1 / RX2 AF)
-#   mon_vol    TX monitor volume
-#   cw_speed   CW keyer speed (WPM)
-#   tune_drive drive used while tuning
+# Either knob can also have these, which have no label on the bottom row.
+# While a knob rests on one, the small readout shows its name in place of
+# the signal reading (the name in brackets):
+#   rx_vol     the controlled receiver's own volume (Thetis RX1 / RX2 AF)  (AF)
+#   mon_vol    TX monitor volume  (-non)
+#   cw_speed   CW keyer speed (WPM)  (SPd)
+#   tune_drive drive used while tuning  (tdr)
 # "start" is the function each knob is on when the connector starts.
 [e1]
-functions = ["vol", "sql", "rfg", "drv", "nr", "nb", "an"]
+functions = ["vol", "rfg", "sql", "drv", "nr", "nb", "an"]
 start = "vol"
 
 [e2]
@@ -142,9 +163,12 @@ NFM = [-5500, 5500]
 #       knob's current function; for the filter functions it restores the
 #       mode's default filter from [filters])
 #   Radio and connector
-#     power (start / stop the radio)  focus (bring the radio software's
-#     window to the front)  backlight_next (cycle the backlight presets
-#     until the next restart or settings change)
+#     power (start / stop the radio)  backlight_next (cycle the backlight
+#     presets until the next restart or settings change)
+#   TCI-X (only where the server offers them)
+#     control   ask for control of the radio, or give it up
+#     preamp  att   the next of the radio's preamp settings / attenuator
+#       steps, round again; the PRE and ATT lamps show which
 #   raw:<text>   sends <text> to the radio unchanged, e.g. raw:trx:0,true;
 #   none
 [buttons]

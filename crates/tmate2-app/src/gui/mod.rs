@@ -14,8 +14,8 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::watch;
 
 use tmate2_core::config::{
-    Action, ButtonAction, Config, KnobFunction, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
-    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS,
+    Action, ButtonAction, Config, KnobFunction, Pacing, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
+    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS, POLL_MIN_MS,
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
 
@@ -24,8 +24,8 @@ use crate::shared::Shared;
 // Each knob's labelled functions in LCD order, then the ones without a label.
 const E1_CHOICES: [KnobFunction; 11] = [
     KnobFunction::Vol,
-    KnobFunction::Sql,
     KnobFunction::Rfg,
+    KnobFunction::Sql,
     KnobFunction::Drv,
     KnobFunction::Nr,
     KnobFunction::Nb,
@@ -295,12 +295,38 @@ impl App {
                 ));
                 ui.separator();
                 ui.label(match &radio.tcix {
-                    Some(caps) => format!("TCI-X: yes ({} capabilities)", caps.len()),
+                    Some(m) => format!("TCI-X: yes ({} capabilities)", m.len()),
                     None if r.tcix == TcixMode::Off => "TCI-X: off".into(),
                     None => "TCI-X: not offered".into(),
                 });
+                if let (Some(user), Some(role)) = (&radio.login_user, &radio.role) {
+                    ui.separator();
+                    ui.label(format!("Logged in: {user} ({role})"));
+                }
+                if radio.has_tcix("control_request") {
+                    ui.separator();
+                    ui.label(match &radio.control {
+                        _ if radio.in_control() => "Control: you".to_string(),
+                        // Only a login of our own tells us we aren't the
+                        // operator: through a relay (KADRAD's) we act
+                        // under its login, which may be this one.
+                        Some(op) if radio.login_user.is_some() => format!("Control: {op} (you're watching)"),
+                        Some(op) => format!("Control: {op}"),
+                        None => "Control: nobody".to_string(),
+                    });
+                }
             } else {
-                ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port));
+                match radio.notice.as_deref() {
+                    Some("login") => ui.label(format!(
+                        "Radio: {}:{} needs a TCI-X login (see the log)",
+                        r.host, r.port
+                    )),
+                    Some("idle") => ui.label(format!(
+                        "Radio: {}:{} closed the connection after the idle time; touch the TMATE-2 to reconnect",
+                        r.host, r.port
+                    )),
+                    _ => ui.label(format!("Radio: connecting to {}:{} …", r.host, r.port)),
+                };
             }
         });
     }
@@ -523,12 +549,47 @@ impl App {
                     ui.radio_value(&mut r.tcix, TcixMode::On, "on");
                 });
                 ui.end_row();
+                ui.label("Pacing").on_hover_text(
+                    "For a radio that can't keep up with the dial, e.g. one reached over a network",
+                );
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut r.pacing, Pacing::Off, "off");
+                    ui.radio_value(&mut r.pacing, Pacing::Auto, "auto");
+                    ui.radio_value(&mut r.pacing, Pacing::On, "on");
+                });
+                ui.end_row();
                 ui.label("Receiver (trx)");
                 ui.add(egui::DragValue::new(&mut r.trx).range(0..=7));
                 ui.end_row();
+                ui.label("Poll").on_hover_text(
+                    "How often to read what the LCD shows from the radio, for software that \
+                     doesn't report changes made in its own window. Applies at once.",
+                );
+                ui.horizontal(|ui| {
+                    let mut on = r.poll_ms != 0;
+                    if ui.checkbox(&mut on, "every").changed() {
+                        r.poll_ms = if on { 1000 } else { 0 };
+                    }
+                    // The box clamps whatever it holds into its range, even
+                    // greyed out, so while off it shows a copy, not the 0.
+                    let mut off_copy = 1000;
+                    let value = if on { &mut r.poll_ms } else { &mut off_copy };
+                    ui.add_enabled(
+                        on,
+                        egui::DragValue::new(value)
+                            .range(POLL_MIN_MS..=10_000)
+                            .speed(10)
+                            .suffix(" ms"),
+                    );
+                    if !on {
+                        ui.label("off");
+                    }
+                });
+                ui.end_row();
             });
         ui.add_space(6.0);
-        ui.label("auto: uses TCI-X if the server offers it, otherwise plain TCI.");
+        ui.label("TCI-X auto: uses TCI-X if the server offers it, otherwise plain TCI.");
+        ui.label("Pacing auto: sends every step while the radio keeps up, and waits for its reply once it falls behind.");
     }
 
     fn log_tab(&mut self, ui: &mut egui::Ui) {
@@ -558,6 +619,7 @@ impl App {
         // Radio connection changes wait for Save (no reconnect per keystroke).
         c.radio = self.saved.radio.clone();
         c.radio.trx = self.draft.radio.trx;
+        c.radio.poll_ms = self.draft.radio.poll_ms;
         c
     }
 
@@ -585,7 +647,13 @@ impl App {
         })();
         match result {
             Ok(cfg) => {
-                if cfg.radio != self.saved.radio {
+                // Reconnect only for a change the connection uses: the poll
+                // period is the engine's, and already applied live.
+                let connection = RadioConfig {
+                    poll_ms: self.saved.radio.poll_ms,
+                    ..cfg.radio.clone()
+                };
+                if connection != self.saved.radio {
                     let _ = self.radio_cfg_tx.send(cfg.radio.clone());
                 }
                 let _ = self.shared.config_tx.lock().unwrap().send(cfg.clone());

@@ -58,7 +58,79 @@ pub struct RadioConfig {
     pub host: String,
     pub port: u16,
     pub tcix: TcixMode,
+    /// How dial and knob values are paced to the server.
+    #[serde(default)]
+    pub pacing: Pacing,
+    /// How often what the LCD shows is read from the radio, in ms (0 = never).
+    #[serde(default = "default_poll_ms")]
+    pub poll_ms: u64,
+    /// The numbers behind `pacing`: the tested values unless the file has a
+    /// `[radio.pacing_tuning]` table to override them. Not in the window.
+    #[serde(default)]
+    pub pacing_tuning: PacingTuning,
     pub trx: usize,
+    /// TCI-X login (§4.3), for a server that asks for one.
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// The numbers behind `[radio] pacing`. The defaults are the values tested
+/// on Thetis and piHPSDR, and are deliberately not in `default_config.toml`:
+/// a user with a slow link (a radio reached over the internet through
+/// kadrad-hub, say) can add a `[radio.pacing_tuning]` table with just the
+/// keys to change (see the README). Missing keys keep these values.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PacingTuning {
+    /// `auto`: pace a target once its echoes average this long (ms)…
+    pub on_above_ms: u64,
+    /// …and send freely again once they are back under this.
+    pub off_below_ms: u64,
+    /// While paced, the shortest gap between values (ms).
+    pub min_interval_ms: u64,
+    /// While paced, how long to wait for an echo before sending anyway (ms).
+    pub echo_wait_ms: u64,
+    /// How much each new echo counts in the average, 0 to 1 (1 = only the
+    /// newest echo).
+    pub smoothing: f32,
+}
+
+impl Default for PacingTuning {
+    fn default() -> Self {
+        PacingTuning {
+            on_above_ms: 80,
+            off_below_ms: 30,
+            min_interval_ms: 40,
+            echo_wait_ms: 300,
+            smoothing: 0.3,
+        }
+    }
+}
+
+fn default_poll_ms() -> u64 {
+    1000
+}
+
+/// The shortest poll period, in ms: reads faster than this only fill the log.
+pub const POLL_MIN_MS: u64 = 100;
+
+/// Environment variable that supplies the TCI-X password instead of the
+/// configuration file.
+pub const PASSWORD_ENV: &str = "TMATE2_TCIX_PASSWORD";
+
+impl RadioConfig {
+    /// The login to use, if both a user and a password are set (the
+    /// password from the environment first, then the file).
+    pub fn credentials(&self) -> Option<(String, String)> {
+        let user = self.user.as_deref().map(str::trim).filter(|u| !u.is_empty())?;
+        let password = std::env::var(PASSWORD_ENV)
+            .ok()
+            .or_else(|| self.password.clone())
+            .filter(|p| !p.is_empty())?;
+        Some((user.to_string(), password))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -72,6 +144,20 @@ pub enum Backend {
 pub enum TcixMode {
     Off,
     Auto,
+    On,
+}
+
+/// Pacing of dial and knob values (see `pacing` in `default_config.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pacing {
+    /// Send every value at once (newest per target when several queue up).
+    Off,
+    /// Send at once while the server keeps up; one value in flight per
+    /// target once its echoes fall behind.
+    #[default]
+    Auto,
+    /// Always one value in flight per target, the next on the echo.
     On,
 }
 
@@ -141,7 +227,7 @@ pub const AGC_MODES: [&str; 6] = ["off", "long", "slow", "normal", "fast", "cust
 /// Modes stepped through by `agc_next`.
 pub const AGC_CYCLE: [&str; 4] = ["long", "slow", "normal", "fast"];
 
-/// How E1 VOL shows and steps the master volume.
+/// How the volume knobs (VOL, rx_vol, mon_vol) show and step the volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeScale {
@@ -329,6 +415,20 @@ impl KnobFunction {
         !Self::UNLABELLED.contains(&self)
     }
 
+    /// For a function without an LCD label: the name the small 3-digit
+    /// readout holds while a knob rests on it, and whether the minus segment
+    /// to its left is lit with it. MON is "-non" ("m" can't be drawn on
+    /// seven segments).
+    pub fn readout_name(self) -> Option<(&'static str, bool)> {
+        match self {
+            KnobFunction::RxVol => Some(("AF", false)),
+            KnobFunction::MonVol => Some(("non", true)),
+            KnobFunction::CwSpeed => Some(("SPd", false)),
+            KnobFunction::TuneDrive => Some(("tdr", false)),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             KnobFunction::Vol => "vol",
@@ -417,7 +517,6 @@ pub enum Action {
     Mox,
     Ptt,
     Power,
-    Focus,
     BacklightNext,
     StepNext,
     StepPrev,
@@ -425,6 +524,11 @@ pub enum Action {
     E2Next,
     E1Toggle,
     E2Toggle,
+    /// TCI-X control (§4.4): ask for it, or give it up if we hold it.
+    Control,
+    /// TCI-X `preamp` / `attenuator`: the next of the radio's settings.
+    Preamp,
+    Att,
     Raw(String),
     None,
 }
@@ -469,7 +573,6 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("mox", Action::Mox),
     ("ptt", Action::Ptt),
     ("power", Action::Power),
-    ("focus", Action::Focus),
     ("backlight_next", Action::BacklightNext),
     ("step_next", Action::StepNext),
     ("step_prev", Action::StepPrev),
@@ -477,6 +580,9 @@ const SIMPLE_ACTIONS: &[(&str, Action)] = &[
     ("e2_next", Action::E2Next),
     ("e1_toggle", Action::E1Toggle),
     ("e2_toggle", Action::E2Toggle),
+    ("control", Action::Control),
+    ("preamp", Action::Preamp),
+    ("att", Action::Att),
     ("none", Action::None),
 ];
 
@@ -620,6 +726,23 @@ impl Config {
                 t.step_hz
             ));
         }
+        let p = &self.radio.pacing_tuning;
+        if p.off_below_ms >= p.on_above_ms {
+            return bad("radio.pacing_tuning: off_below_ms must be less than on_above_ms".into());
+        }
+        if p.min_interval_ms < 1 || p.echo_wait_ms < p.min_interval_ms {
+            return bad(
+                "radio.pacing_tuning: min_interval_ms must be at least 1, and echo_wait_ms at least min_interval_ms"
+                    .into(),
+            );
+        }
+        if !(p.smoothing > 0.0 && p.smoothing <= 1.0) {
+            return bad("radio.pacing_tuning: smoothing must be above 0 and at most 1".into());
+        }
+        let poll = self.radio.poll_ms;
+        if poll != 0 && poll < POLL_MIN_MS {
+            return bad(format!("radio.poll_ms must be 0 (off) or at least {POLL_MIN_MS}"));
+        }
         if self.display.tx_power_max_w < 1 {
             return bad("display.tx_power_max_w must be at least 1".into());
         }
@@ -668,6 +791,38 @@ mod tests {
         assert_eq!(c.buttons.f1.hold, None, "hold = \"none\" means no hold");
         assert_eq!(c.buttons.main_push.tap, Some(Action::VfoToggle));
         assert_eq!(c.e1.functions[0], KnobFunction::Vol);
+        assert_eq!(c.radio.poll_ms, 1000);
+        // The tested pacing numbers are built in, not in the file.
+        assert!(!DEFAULT_TOML.contains("[radio.pacing_tuning]"));
+        assert_eq!(c.radio.pacing_tuning, PacingTuning::default());
+    }
+
+    #[test]
+    fn pacing_tuning_can_be_added_as_an_override() {
+        let with = |table: &str| Config::parse(&format!("{DEFAULT_TOML}\n[radio.pacing_tuning]\n{table}\n"));
+        // Only the keys given change; the rest keep the tested values.
+        let t = with("on_above_ms = 150\necho_wait_ms = 600")
+            .unwrap()
+            .radio
+            .pacing_tuning;
+        assert_eq!((t.on_above_ms, t.echo_wait_ms), (150, 600));
+        assert_eq!(t.off_below_ms, PacingTuning::default().off_below_ms);
+        // Values that can't work, and misspelt keys, are refused.
+        assert!(with("off_below_ms = 90").is_err());
+        assert!(with("smoothing = 0").is_err());
+        assert!(with("echo_wait_ms = 10").is_err());
+        assert!(with("on_above = 150").is_err());
+    }
+
+    #[test]
+    fn poll_ms_is_off_or_at_least_the_minimum() {
+        let with = |v: &str| DEFAULT_TOML.replace("poll_ms = 1000", &format!("poll_ms = {v}"));
+        assert_eq!(Config::parse(&with("0")).unwrap().radio.poll_ms, 0);
+        assert_eq!(Config::parse(&with("250")).unwrap().radio.poll_ms, 250);
+        assert!(Config::parse(&with("50")).is_err());
+        // An older file without the key polls every second.
+        let old = DEFAULT_TOML.replace("poll_ms = 1000\n", "");
+        assert_eq!(Config::parse(&old).unwrap().radio.poll_ms, 1000);
     }
 
     #[test]

@@ -28,3 +28,12 @@ contains no fonts.
 
 These specifications were implemented independently; no specification text
 is reproduced beyond command names.
+
+## Test fixtures
+
+The TCI-X example sessions in
+[crates/tmate2-backends/tests/fixtures/tcix/](crates/tmate2-backends/tests/fixtures/tcix/)
+are copied unchanged from <https://github.com/g0kad/TCI-X> (MIT, copyright
+Mike G0KAD and TCI-X contributors). The licence is alongside them in
+[LICENSE](crates/tmate2-backends/tests/fixtures/tcix/LICENSE). They are used
+by the tests only and are not part of the program.

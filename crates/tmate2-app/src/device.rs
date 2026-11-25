@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use tmate2_core::render::render;
 use tmate2_core::{Command, Config, Engine};
@@ -81,6 +81,7 @@ pub fn run(
                     tracker.feed(report, &mut events);
                     let now = Instant::now();
                     for ev in events.drain(..) {
+                        trace!("input {ev:?}");
                         *shared.last_input.lock().unwrap() = Some((ev, now));
                         let cmds = engine.handle(ev, now, &mut shared.radio.lock().unwrap());
                         send(cmds);
@@ -94,7 +95,13 @@ pub fn run(
             if now.duration_since(last_draw) >= FRAME {
                 let snapshot = shared.radio.lock().unwrap().clone();
                 let cfg = engine.config().display.clone();
-                render(&snapshot, &engine.view(now), &cfg, &map, dev.output_mut());
+                render(
+                    &snapshot,
+                    &engine.view(now, &snapshot),
+                    &cfg,
+                    &map,
+                    dev.output_mut(),
+                );
                 if shared.all_segments_until.lock().unwrap().is_some_and(|t| now < t) {
                     dev.output_mut().all_segments();
                 }
