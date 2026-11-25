@@ -76,7 +76,7 @@ The LCD works like a radio's front panel:
 ### The window
 
 - **Mini mode** (how it opens, unless `[window] start = "full"`): the connection status and a live copy of the LCD, with no title bar. Drag it to move it, use the corner grip to size it, and double-click or press **Full** for the settings. Tick **On top** to keep it above the radio software.
-- **Full mode**: the same, plus every setting on six tabs, applied to the TMATE-2 as you change them; **Save** writes them to the configuration file, keeping your comments. Drag the bar under the LCD copy to size it apart from the window. **Mini** goes back.
+- **Full mode**: the same, plus every setting on its tabs, applied to the TMATE-2 as you change them; **Save** writes them to the configuration file, keeping your comments. Drag the bar under the LCD copy to size it apart from the window. **Mini** goes back. The **About** tab shows the version, links to this page and the releases, and where the files are kept.
 - **Remembered on each computer**: each mode's size and place, the LCD copy's size, On top and the last tab. They're kept apart from the configuration file (`%APPDATA%\tmate2-connector\data` on Windows, `~/.local/share/tmate2-connector` on Linux), so a configuration copied to another computer doesn't bring this screen's sizes with it.
 - **Server names**: the window shows the TCI server as `localhost:50001` (or its host name or address), not the radio model TCI reports, which is always a SunSDR. Give it a name, such as Thetis, in the Radio tab, or in a `[radio.names]` table in the file keyed by `"host:port"`.
 
