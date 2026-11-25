@@ -19,6 +19,7 @@ use tmate2_core::config::{
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
 
+use crate::launch::Overrides;
 use crate::shared::Shared;
 
 // Each knob's labelled functions in LCD order, then the ones without a label.
@@ -182,6 +183,7 @@ struct App {
     mode_cycle_text: String,
     status: Option<(String, bool)>,
     radio_cfg_tx: watch::Sender<RadioConfig>,
+    start: Start,
     window: WindowState,
     /// The first frame has set the window's minimum size and stacking.
     window_set_up: bool,
@@ -190,11 +192,20 @@ struct App {
     resizing: Option<(egui::Vec2, std::time::Instant)>,
 }
 
+/// How this run was started (see `--host`, `--port`, `--minimized`).
+pub struct Start {
+    /// Where to connect over the file's `[radio]`; never saved.
+    pub overrides: Overrides,
+    /// Minimise the window once it's open.
+    pub minimized: bool,
+}
+
 pub fn run(
     shared: Arc<Shared>,
     cfg: Config,
     path: PathBuf,
     radio_cfg_tx: watch::Sender<RadioConfig>,
+    start: Start,
 ) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -217,6 +228,7 @@ pub fn run(
         draft: cfg,
         status: None,
         radio_cfg_tx,
+        start,
         window: WindowState::default(),
         window_set_up: false,
         resizing: None,
@@ -405,10 +417,16 @@ impl App {
         }
     }
 
+    /// The connection as used: the saved `[radio]`, with `--host` / `--port`
+    /// in place. The window edits and saves the file's own values.
+    fn connection(&self) -> RadioConfig {
+        self.start.overrides.apply(&self.saved.radio)
+    }
+
     /// The server connected to: its friendly name from `[radio.names]` (as
     /// being edited, so a new name shows at once), and its address.
     fn server(&self) -> (Option<String>, String) {
-        let mut r = self.saved.radio.clone();
+        let mut r = self.connection();
         r.names = self.draft.radio.names.clone();
         (r.server_name().map(str::to_string), server_label(&r.host, r.port))
     }
@@ -420,7 +438,7 @@ impl App {
             ui.label("TMATE-2");
             ui.separator();
             dot(ui, radio.connected);
-            let r = &self.saved.radio;
+            let r = &self.connection();
             if radio.connected {
                 // Not the `device:` the server reports: TCI servers all name
                 // a SunSDR model whatever the radio is.
@@ -678,6 +696,28 @@ impl App {
     }
 
     fn radio_tab(&mut self, ui: &mut egui::Ui) {
+        // With --host / --port the address is the command line's: shown,
+        // greyed out, and the file's own host and port are left alone.
+        let commanded = self
+            .start
+            .overrides
+            .describe()
+            .map(|given| (given, self.connection()));
+        if let Some((given, used)) = &commanded {
+            let amber = Color32::from_rgb(255, 190, 40);
+            ui.label(
+                RichText::new(format!(
+                    "This run connects to {} ({given} on the command line).",
+                    server_label(&used.host, used.port)
+                ))
+                .color(amber),
+            );
+            ui.label(
+                RichText::new("The configuration file host or port cannot be edited in this mode.")
+                    .color(amber),
+            );
+            ui.add_space(4.0);
+        }
         let r = &mut self.draft.radio;
         egui::Grid::new("radio")
             .num_columns(2)
@@ -687,25 +727,48 @@ impl App {
                 ui.label("TCI");
                 ui.end_row();
                 ui.label("Host");
-                ui.text_edit_singleline(&mut r.host);
+                match &commanded {
+                    Some((_, used)) => {
+                        let mut host = used.host.clone();
+                        ui.add_enabled(false, egui::TextEdit::singleline(&mut host));
+                    }
+                    None => {
+                        ui.text_edit_singleline(&mut r.host);
+                    }
+                }
                 ui.end_row();
                 ui.label("Port");
-                ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
+                match &commanded {
+                    Some((_, used)) => {
+                        let mut port = used.port;
+                        ui.add_enabled(false, egui::DragValue::new(&mut port));
+                    }
+                    None => {
+                        ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
+                    }
+                }
                 ui.end_row();
                 ui.label("Name").on_hover_text(
                     "Shown instead of the address, e.g. Thetis. Kept in [radio.names] \
                      for this host and port, so each server keeps its own.",
                 );
-                let mut name = r
+                // The server this run uses: --host / --port, if given, decide
+                // which one the name belongs to.
+                let mut named = self.start.overrides.apply(r);
+                let mut name = named
                     .name_key()
-                    .and_then(|k| r.names.get(k))
+                    .and_then(|k| named.names.get(k))
                     .cloned()
                     .unwrap_or_default();
                 if ui
-                    .add(egui::TextEdit::singleline(&mut name).hint_text(server_label(&r.host, r.port)))
+                    .add(
+                        egui::TextEdit::singleline(&mut name)
+                            .hint_text(server_label(&named.host, named.port)),
+                    )
                     .changed()
                 {
-                    r.set_server_name(&name);
+                    named.set_server_name(&name);
+                    r.names = named.names;
                 }
                 ui.end_row();
                 ui.label("TCI-X extensions");
@@ -816,13 +879,14 @@ impl App {
                 // Reconnect only for a change the connection uses: the poll
                 // period is the engine's, and already applied live, and the
                 // server names are only shown.
-                let connection = RadioConfig {
+                let used = self.start.overrides.apply(&cfg.radio);
+                let unchanged = RadioConfig {
                     poll_ms: self.saved.radio.poll_ms,
                     names: self.saved.radio.names.clone(),
-                    ..cfg.radio.clone()
+                    ..used.clone()
                 };
-                if connection != self.saved.radio {
-                    let _ = self.radio_cfg_tx.send(cfg.radio.clone());
+                if unchanged != self.connection() {
+                    let _ = self.radio_cfg_tx.send(used);
                 }
                 let _ = self.shared.config_tx.lock().unwrap().send(cfg.clone());
                 self.saved = cfg.clone();
@@ -1113,6 +1177,9 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.window.mini));
             self.apply_window_level(&ctx);
             self.set_mini(&ctx, self.saved.window.start == WindowMode::Mini);
+            if self.start.minimized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
         }
         self.note_window_size(&ctx);
 
