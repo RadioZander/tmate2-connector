@@ -67,7 +67,7 @@ The configuration file lists every action with a comment.
 The LCD works like a radio's front panel:
 
 - **Main display:** the frequency to the hertz.
-- **Mode and status:** the mode, VFO A / B, RX / TX, NR and NB.
+- **Mode and status:** the mode, VFO A / B, RX / TX, and the NR, NB and AN (auto notch) lamps.
 - **Knobs:** the labels of each knob's function.
 - **S meter:** the bargraph with its scale, and the signal in -dBm or S units.
 - **On transmit:** the S scale switches off. The bargraph shows power or SWR (1.8:1 at S9), and the readout shows watts or SWR (`1_2` means 1.2:1).
@@ -83,7 +83,7 @@ The window shows a live copy of the LCD, and you can change all the settings the
   - The connector sends only the commands the server says it accepts, and skips knob functions the radio can't do.
   - It uses the radio's own AF and RF gain, filter presets, band stack and antenna tuner.
   - It logs in if the server asks, and takes part in the server's one-operator control.
-  - The ATT, PRE, ANT, LP and ERR lamps follow the radio.
+  - The ATT, PRE, LP and ERR lamps follow the radio.
 
 ## Download
 

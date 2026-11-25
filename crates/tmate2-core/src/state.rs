@@ -526,19 +526,6 @@ impl RadioState {
         (att, pre)
     }
 
-    /// The ANT lamp: receiving on the separate receive antenna, or on any
-    /// antenna but the first in the server's list.
-    pub fn other_antenna(&self, trx: usize) -> bool {
-        let Some(x) = self.trx(trx) else { return false };
-        let first = self
-            .tcix
-            .as_ref()
-            .and_then(|m| m.enum_values("antenna"))
-            .and_then(|l| l.first());
-        x.rx_antenna
-            || matches!((x.antenna.as_deref(), first), (Some(a), Some(f)) if !a.eq_ignore_ascii_case(f))
-    }
-
     /// How far the dial may go, in Hz. With TCI-X, the range the manifest
     /// gives `vfo`: it can change while connected (a FlexRadio's
     /// transverter bands are known only once the server has logged in to

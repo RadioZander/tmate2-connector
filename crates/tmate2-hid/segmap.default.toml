@@ -160,7 +160,7 @@
 "vfo.b" = "3.5"
 "left.nr" = "1.6"
 "left.nb" = "2.6"
-"left.ant" = "3.6"
+"left.an" = "3.6"
 
 # Units right of the frequency (k + Hz, W, m + W)
 "unit.k" = "26.0"

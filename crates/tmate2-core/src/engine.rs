@@ -788,7 +788,7 @@ impl Engine {
         }
     }
 
-    /// Read what the LCD shows (frequency, mode, NR, NB, LOCK, transmit)
+    /// Read what the LCD shows (frequency, mode, NR, NB, AN, LOCK, transmit)
     /// every [`POLL`], for changes the radio makes without reporting them.
     /// Not what a knob here is setting right now.
     fn poll(&mut self, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
@@ -802,6 +802,7 @@ impl Engine {
                 "modulation",
                 "rx_nr_enable",
                 "rx_nb_enable",
+                "rx_anf_enable",
                 "lock",
                 "trx",
                 "tune",
@@ -1622,6 +1623,7 @@ pub(crate) mod tests {
                 "modulation",
                 "rx_nr_enable",
                 "rx_nb_enable",
+                "rx_anf_enable",
                 "lock",
                 "trx",
                 "tune"
@@ -1633,6 +1635,7 @@ pub(crate) mod tests {
             "modulation",
             "rx_nr_enable",
             "rx_nb_enable",
+            "rx_anf_enable",
             "lock",
             "trx",
             "tune",
@@ -1653,6 +1656,7 @@ pub(crate) mod tests {
                 "modulation",
                 "rx_nr_enable",
                 "rx_nb_enable",
+                "rx_anf_enable",
                 "lock",
                 "trx",
                 "tune"

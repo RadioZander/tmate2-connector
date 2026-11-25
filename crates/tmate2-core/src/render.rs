@@ -157,6 +157,9 @@ pub fn render(
     if trx.nb {
         on("left.nb");
     }
+    if trx.anf {
+        on("left.an");
+    }
     // The radio's front end, where the server reports it (TCI-X).
     let (att, pre) = state.front_end_lamps(view.trx);
     for (lamp, name) in [(att, "att"), (pre, "pre")] {
@@ -168,9 +171,6 @@ pub fn render(
                 on(&format!("{name}.{n}"));
             }
         }
-    }
-    if state.other_antenna(view.trx) {
-        on("left.ant");
     }
     if trx.pa_enable == Some(false) {
         on("lp");
@@ -315,7 +315,7 @@ mod tests {
             let mut out = OutputReport::default();
             render(s, &view(), &cfg.display, &map, &mut out);
             [
-                "att", "att.1", "att.2", "pre", "pre.1", "pre.2", "left.ant", "lp", "err",
+                "att", "att.1", "att.2", "pre", "pre.1", "pre.2", "left.an", "lp", "err",
             ]
             .into_iter()
             .filter(|n| out.segment(map.get(n).unwrap()))
@@ -335,8 +335,11 @@ mod tests {
         assert_eq!(lit(&s), ["pre", "pre.1"]);
         let t = s.trx_mut(0);
         (t.preamp, t.attenuator, t.antenna) = (Some("p2".into()), Some("12".into()), Some("ant2".into()));
-        // One attenuator step: ATT with no number.
-        assert_eq!(lit(&s), ["att", "pre", "pre.2", "left.ant"]);
+        // One attenuator step: ATT with no number. The other antenna has no
+        // lamp: the AN beside NR and NB is the auto notch.
+        assert_eq!(lit(&s), ["att", "pre", "pre.2"]);
+        s.trx_mut(0).anf = true;
+        assert_eq!(lit(&s), ["att", "pre", "pre.2", "left.an"]);
         // Four attenuator steps (a Yaesu): 1, then 2 for the rest.
         let mut y = radio(&["attenuator,rw,enum,0,6,12,18", "preamp,rw,enum,off,p1"]);
         y.trx_mut(0).attenuator = Some("6".into());
@@ -351,13 +354,14 @@ mod tests {
         f.trx_mut(0).preamp = Some("-10".into());
         assert_eq!(lit(&f), ["att"]);
         f.trx_mut(0).preamp = Some("0".into());
-        // The PA off, the receive antenna, and a radio that isn't answering.
+        // The PA off, the receive antenna (no lamp), and a radio that isn't
+        // answering.
         f.trx_mut(0).pa_enable = Some(false);
         f.trx_mut(0).rx_antenna = true;
         f.radio_state = Some("no_response".into());
-        assert_eq!(lit(&f), ["left.ant", "lp", "err"]);
+        assert_eq!(lit(&f), ["lp", "err"]);
         f.radio_state = Some("connected".into());
-        assert_eq!(lit(&f), ["left.ant", "lp"]);
+        assert_eq!(lit(&f), ["lp"]);
     }
 
     #[test]

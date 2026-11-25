@@ -106,7 +106,7 @@ The maintainer wants the LCD to look like a real radio:
 - **Unanswered:** a command with no report gets one read after 0.5 s. If
   that goes unanswered too, the value is taken as unknown (lamp off).
 - **Poll:** what the LCD shows is read once a second (frequency, mode,
-  NR, NB, LOCK, TX, TUNE), skipping what a knob is setting right now.
+  NR, NB, AN, LOCK, TX, TUNE), skipping what a knob is setting right now.
 - The same rules apply to every server. Don't branch on which program it
   is.
 
