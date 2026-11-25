@@ -38,6 +38,13 @@ trx = 0
 # user = "your-callsign"
 # password = ""
 
+# Friendly names for TCI servers, shown in the window instead of the
+# address. Keys are "host:port"; 127.0.0.1 and localhost are the same. The
+# window's Radio tab can set the name of the server it connects to.
+# [radio.names]
+# "127.0.0.1:50001" = "Thetis"
+# "192.168.1.20:40001" = "piHPSDR on the G2"
+
 [display]
 # LCD contrast in percent: 100 is darkest, 0 is faintest.
 contrast = 100
@@ -63,6 +70,12 @@ tx_meter = "power"
 tx_readout = "watts"
 # Power in W that fills the bargraph (the ANAN-G2 is a 100 W radio).
 tx_power_max_w = 100
+
+[window]
+# How the connector's window opens: "mini" (the connection status and the
+# LCD) or "full" (with all the settings). Each remembers its own size on
+# this computer. Not used with --headless.
+start = "mini"
 
 [tuning]
 # Tuning steps for the main knob; the step digit is underlined on the LCD.

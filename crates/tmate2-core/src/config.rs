@@ -18,6 +18,9 @@ pub struct Config {
     pub e1: KnobConfig,
     pub e2: KnobConfig,
     pub buttons: ButtonsConfig,
+    /// The desktop window (not used with --headless).
+    #[serde(default)]
+    pub window: WindowConfig,
     /// Default receive filter per mode name (e.g. "USB"), [low, high] in Hz.
     #[serde(default = "default_filters")]
     pub filters: BTreeMap<String, [i32; 2]>,
@@ -68,6 +71,10 @@ pub struct RadioConfig {
     /// `[radio.pacing_tuning]` table to override them. Not in the window.
     #[serde(default)]
     pub pacing_tuning: PacingTuning,
+    /// Friendly names for TCI servers, by `host:port` (`[radio.names]`),
+    /// shown in the window instead of the address.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
     pub trx: usize,
     /// TCI-X login (§4.3), for a server that asks for one.
     #[serde(default)]
@@ -120,7 +127,63 @@ pub const POLL_MIN_MS: u64 = 100;
 /// configuration file.
 pub const PASSWORD_ENV: &str = "TMATE2_TCIX_PASSWORD";
 
+/// A TCI server as a person would say it: `localhost:50001` for this
+/// computer, otherwise the host as written (a name stays a name, an address
+/// an address), with an IPv6 address in brackets. `[radio.names]` keys are
+/// matched in this form (ignoring case), so `127.0.0.1:50001` and
+/// `localhost:50001` agree.
+pub fn server_label(host: &str, port: u16) -> String {
+    let host = host.trim();
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<std::net::IpAddr>() {
+        _ if host.eq_ignore_ascii_case("localhost") => format!("localhost:{port}"),
+        Ok(ip) if ip.is_loopback() => format!("localhost:{port}"),
+        Ok(std::net::IpAddr::V6(v6)) => format!("[{v6}]:{port}"),
+        _ => format!("{host}:{port}"),
+    }
+}
+
+/// A `[radio.names]` key, `host:port`, in [`server_label`] form, lower case
+/// for matching.
+fn name_key_label(key: &str) -> Option<String> {
+    let (host, port) = key.trim().rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    (!host.is_empty()).then(|| server_label(host, port).to_ascii_lowercase())
+}
+
 impl RadioConfig {
+    /// The key in `[radio.names]` for the server this connects to, as
+    /// written in the file, if it has one.
+    pub fn name_key(&self) -> Option<&String> {
+        let here = server_label(&self.host, self.port).to_ascii_lowercase();
+        self.names
+            .keys()
+            .find(|k| name_key_label(k).as_deref() == Some(here.as_str()))
+    }
+
+    /// The friendly name of the server this connects to, if it has one.
+    pub fn server_name(&self) -> Option<&str> {
+        self.name_key()
+            .and_then(|k| self.names.get(k))
+            .map(|n| n.trim())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// Give the server this connects to a name, or none (an empty `name`):
+    /// the entry it already has is changed, else one is added as
+    /// `host:port`.
+    pub fn set_server_name(&mut self, name: &str) {
+        let key = self
+            .name_key()
+            .cloned()
+            .unwrap_or_else(|| format!("{}:{}", self.host.trim(), self.port));
+        if name.trim().is_empty() {
+            self.names.remove(&key);
+        } else {
+            self.names.insert(key, name.to_string());
+        }
+    }
+
     /// The login to use, if both a user and a password are set (the
     /// password from the environment first, then the file).
     pub fn credentials(&self) -> Option<(String, String)> {
@@ -197,6 +260,25 @@ pub enum TxMeter {
     /// SWR: 1.8:1 at the S9 bar, 3:1 fills it.
     Swr,
     Off,
+}
+
+/// The desktop window (`[window]`). Its size and the mimic's height are
+/// kept per machine by the window itself, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowConfig {
+    pub start: WindowMode,
+}
+
+/// How the window opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowMode {
+    /// The connection status and the LCD only.
+    #[default]
+    Mini,
+    /// With all the settings.
+    Full,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -739,6 +821,11 @@ impl Config {
         if !(p.smoothing > 0.0 && p.smoothing <= 1.0) {
             return bad("radio.pacing_tuning: smoothing must be above 0 and at most 1".into());
         }
+        if let Some(k) = self.radio.names.keys().find(|k| name_key_label(k).is_none()) {
+            return bad(format!(
+                "radio.names: \"{k}\" should be host:port, e.g. \"127.0.0.1:50001\""
+            ));
+        }
         let poll = self.radio.poll_ms;
         if poll != 0 && poll < POLL_MIN_MS {
             return bad(format!("radio.poll_ms must be 0 (off) or at least {POLL_MIN_MS}"));
@@ -792,9 +879,51 @@ mod tests {
         assert_eq!(c.buttons.main_push.tap, Some(Action::VfoToggle));
         assert_eq!(c.e1.functions[0], KnobFunction::Vol);
         assert_eq!(c.radio.poll_ms, 1000);
+        assert_eq!(c.window.start, WindowMode::Mini);
         // The tested pacing numbers are built in, not in the file.
         assert!(!DEFAULT_TOML.contains("[radio.pacing_tuning]"));
         assert_eq!(c.radio.pacing_tuning, PacingTuning::default());
+    }
+
+    #[test]
+    fn servers_have_friendly_names() {
+        let with = |names: &str| Config::parse(&format!("{DEFAULT_TOML}\n[radio.names]\n{names}\n"));
+        let c = with("\"localhost:50001\" = \"Thetis\"\n\"G2-Pi.local:40001\" = \"piHPSDR\"").unwrap();
+        // 127.0.0.1 in [radio] finds the localhost entry.
+        assert_eq!(c.radio.host, "127.0.0.1");
+        assert_eq!(c.radio.server_name(), Some("Thetis"));
+        let mut r = c.radio.clone();
+        (r.host, r.port) = ("g2-pi.local".into(), 40001);
+        assert_eq!(r.server_name(), Some("piHPSDR"));
+        r.port = 40002;
+        assert_eq!(r.server_name(), None);
+        // Naming changes the entry the server has, or adds one.
+        let mut r = c.radio.clone();
+        r.set_server_name("Thetis (shack PC)");
+        assert_eq!(
+            r.names.get("localhost:50001").map(String::as_str),
+            Some("Thetis (shack PC)")
+        );
+        r.set_server_name("");
+        assert!(!r.names.contains_key("localhost:50001"));
+        r.port = 40001;
+        r.set_server_name("piHPSDR");
+        assert_eq!(
+            r.names.get("127.0.0.1:40001").map(String::as_str),
+            Some("piHPSDR")
+        );
+        // A key that isn't host:port is refused.
+        assert!(with("\"Thetis\" = \"Thetis\"").is_err());
+    }
+
+    #[test]
+    fn server_labels() {
+        assert_eq!(server_label("127.0.0.1", 50001), "localhost:50001");
+        assert_eq!(server_label("::1", 40001), "localhost:40001");
+        assert_eq!(server_label("LocalHost", 50001), "localhost:50001");
+        assert_eq!(server_label("192.168.1.20", 40001), "192.168.1.20:40001");
+        assert_eq!(server_label("G2-Pi.local", 40001), "G2-Pi.local:40001");
+        assert_eq!(server_label("fe80::1", 40001), "[fe80::1]:40001");
     }
 
     #[test]

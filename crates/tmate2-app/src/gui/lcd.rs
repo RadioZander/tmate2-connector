@@ -196,10 +196,15 @@ fn background(rgb: (u8, u8, u8)) -> Color32 {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, report: &OutputReport, map: &SegmentMap) {
-    let width = ui.available_width().min(900.0);
-    let scale = width / W;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(W, H) * scale, Sense::hover());
+/// The mimic's width over its height.
+pub const ASPECT: f32 = W / H;
+
+/// Draw the mimic as large as fits in `space`, centred in it, keeping the
+/// real display's proportions. Takes all of `space` from the layout.
+pub fn show(ui: &mut egui::Ui, space: Vec2, report: &OutputReport, map: &SegmentMap) {
+    let (area, _) = ui.allocate_exact_size(space, Sense::hover());
+    let scale = (area.width() / W).min(area.height() / H).max(0.05);
+    let rect = Rect::from_center_size(area.center(), Vec2::new(W, H) * scale);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0 * scale, background(report.rgb()));
 
