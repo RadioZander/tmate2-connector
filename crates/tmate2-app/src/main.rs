@@ -10,6 +10,7 @@
 mod device;
 #[cfg(feature = "gui")]
 mod gui;
+mod launch;
 mod shared;
 
 use std::collections::VecDeque;
@@ -50,6 +51,17 @@ struct Cli {
     /// Run without a window (for servers and the Raspberry Pi).
     #[arg(long)]
     headless: bool,
+    /// TCI server host for this run, over [radio] host in the configuration
+    /// (which is left as it is).
+    #[arg(long, value_name = "HOST")]
+    host: Option<String>,
+    /// TCI server port for this run, over [radio] port in the configuration
+    /// (which is left as it is).
+    #[arg(long, value_name = "PORT")]
+    port: Option<u16>,
+    /// Start with the window minimised.
+    #[arg(long, visible_alias = "minimised")]
+    minimized: bool,
     /// Print the default configuration and exit.
     #[arg(long)]
     print_default_config: bool,
@@ -147,9 +159,23 @@ fn main() -> Result<()> {
         )
         .init();
 
+    // One copy at a time: two would fight over the TMATE-2. Held until the
+    // program ends.
+    let _lock = launch::one_copy(&launch::lock_path()).map_err(|_| {
+        error!("the TMATE-2 connector is already running; this copy is stopping");
+        anyhow::anyhow!("the TMATE-2 connector is already running")
+    })?;
+
     let path = cli.config.unwrap_or_else(default_config_path);
     let cfg = load_config(&path)?;
     info!("configuration: {}", path.display());
+    let overrides = launch::Overrides {
+        host: cli.host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()),
+        port: cli.port,
+    };
+    if let Some(given) = overrides.describe() {
+        info!("connecting where the command line says ({given}), not where the configuration does");
+    }
 
     let mut map = SegmentMap::builtin();
     if let Some(p) = &cli.segmap {
@@ -158,7 +184,7 @@ fn main() -> Result<()> {
     }
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (radio_cfg_tx, radio_cfg_rx) = watch::channel(cfg.radio.clone());
+    let (radio_cfg_tx, radio_cfg_rx) = watch::channel(overrides.apply(&cfg.radio));
     let (config_tx, config_rx) = mpsc::channel();
     let shared = Arc::new(Shared {
         radio: Arc::new(Mutex::new(RadioState::default())),
@@ -200,14 +226,46 @@ fn main() -> Result<()> {
 
     #[cfg(feature = "gui")]
     if !cli.headless {
-        gui::run(shared.clone(), cfg, path, radio_cfg_tx)?;
+        gui::run(
+            shared.clone(),
+            cfg,
+            path,
+            radio_cfg_tx,
+            gui::Start {
+                overrides,
+                minimized: cli.minimized,
+            },
+        )?;
         shared.stop.store(true, Ordering::SeqCst);
     }
     // Keep the settings channel open for the lifetime of the program.
     #[cfg(not(feature = "gui"))]
-    let _radio_cfg_tx = (cli.headless, radio_cfg_tx);
+    let _radio_cfg_tx = (cli.headless, cli.minimized, radio_cfg_tx);
 
     let _ = device.join();
     rt.shutdown_timeout(Duration::from_millis(500));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_launch_options_parse_as_kadrad_sends_them() {
+        let cli =
+            Cli::try_parse_from(["tmate2", "--minimized", "--host", "127.0.0.1", "--port", "40002"]).unwrap();
+        assert_eq!(
+            (cli.host.as_deref(), cli.port, cli.minimized),
+            (Some("127.0.0.1"), Some(40002), true)
+        );
+        assert!(Cli::try_parse_from(["tmate2", "--minimised"]).unwrap().minimized);
+        assert!(Cli::try_parse_from(["tmate2", "--port", "70000"]).is_err());
+        // KADRAD passes an option only once --help lists it.
+        let help = Cli::command().render_long_help().to_string();
+        for option in ["--host", "--port", "--minimized", "minimised"] {
+            assert!(help.contains(option), "{option} missing from --help:\n{help}");
+        }
+    }
 }

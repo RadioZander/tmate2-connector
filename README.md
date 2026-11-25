@@ -121,6 +121,16 @@ diagnostics), an example configuration and, on Linux, the udev rule.
 Run `tmate2` to open the window, or `tmate2 --headless` on a machine with no
 screen. The first run writes a commented configuration file and logs where.
 
+Only one copy runs at a time: a second one stops straight away, so two can't
+fight over the TMATE-2. For a program that starts the connector itself
+(KADRAD, say), these options apply to that run only:
+
+| Option | Does |
+|---|---|
+| `--host <HOST>`, `--port <PORT>` | Connect to this TCI server instead of the one in `[radio]`. The configuration file isn't changed, and the window's Save keeps the file's own values. |
+| `--minimized` (or `--minimised`) | Start with the window minimised. |
+| `--config <FILE>` | Use another configuration file. |
+
 ## Roadmap
 
 - CAT backends: PowerSDR / Thetis ZZ, Kenwood, Elecraft, Icom CI-V
