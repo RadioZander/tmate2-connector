@@ -14,8 +14,9 @@ controller. It is written in Rust, MIT-licensed and public on GitHub.
   `auto`). Use only standard TCI commands. Don't use Thetis-only `*_ex`
   commands or CAT passthrough (`run_cat_ex`) without asking: radio-specific
   extensions are a possible future feature, not something to add quietly.
-- **Targets:** Thetis on Windows (done, tested with an ANAN-G2), then
-  piHPSDR (Linux / the G2's internal Pi), and later KADRAD (G0KAD) via TCI-X.
+- **Targets:** Thetis on Windows and piHPSDR on Linux (both done, tested
+  with an ANAN-G2), then piHPSDR on the G2's internal Pi, and KADRAD
+  (G0KAD) via TCI-X.
 - **Roadmap:**
   - CAT backends: PowerSDR / Thetis ZZ, Kenwood, Elecraft, Icom CI-V
   - Emulation of the ELAD HMI serial output, built only from captures
@@ -42,7 +43,7 @@ controller. It is written in Rust, MIT-licensed and public on GitHub.
 |---|---|
 | `tmate2-hid` | HID reports, encoder tracking, LCD segment map (`segmap.default.toml`), 7-segment font |
 | `tmate2-core` | config (`default_config.toml` holds the commented defaults and is the single source of defaults), radio state, `Command`, mapping `engine`, LCD `render` |
-| `tmate2-backends` | TCI parser/encoder (`tci.rs`, tests against `tests/fixtures/thetis-init.tci`), WebSocket client with reconnect and TCI-X negotiation and login, `pacing.rs` (dial / knob pacing: `[radio] pacing = off|auto|on`; `auto` paces a target only once its echoes take over 80 ms; the tested numbers are built in (`PacingTuning::default`), not in `default_config.toml`; a user on a slow link can add a `[radio.pacing_tuning]` table to override them, and the window never shows it). At `-v` the client logs lines both ways (`TCI >` / `TCI <`, meter reports left out) and the pacer logs each matched echo's delay and average, and when `auto` switches a target to paced or back |
+| `tmate2-backends` | TCI parser/encoder (`tci.rs`, tests against `tests/fixtures/thetis-init.tci`), WebSocket client with reconnect and TCI-X negotiation and login, `pacing.rs` (dial / knob pacing: `[radio] pacing = off|auto|on`; `auto` paces a target only once its echoes take over 80 ms; the tested numbers are built in (`PacingTuning::default`), not in `default_config.toml`; a user on a slow link can add a `[radio.pacing_tuning]` table to override them, and the window never shows it). At `-v` the client logs lines both ways (`TCI >` / `TCI <`; meter reports, also in their `_ex` form, and poll reads and their unchanged answers are left out) and the pacer logs each matched echo's delay and average, and when `auto` switches a target to paced or back |
 | `tmate2-app` | the `tmate2` binary: device thread, GUI (`gui/`, saves with `toml_edit` so comments are kept), headless mode |
 | `tmate2-probe` | hardware diagnostics: `list`, `dump`, `walk`, `demo`, `rgb`, `contrast`, `text`, ... |
 
@@ -73,6 +74,10 @@ The GUI picker lists everything in `SIMPLE_ACTIONS` automatically.
   - Byte 37: contrast. Lower is darker; segments vanish from about 192.
 - **Bottom row of the LCD:** split by the E1 / E2 markers. E1 has VOL, RFG,
   SQL, DRV, NR, NB and AN; E2 has HIGH, LOW, SHIFT, RIT and XIT.
+- **Left of the frequency:** NR, NB and AN lamps (`left.*`). AN is the
+  automatic notch, not an antenna.
+- **Timeout:** when writes stop, the TMATE-2 clears its LCD after a short
+  time and shows `--- --- ---`.
 
 More detail is in `docs/hardware-bringup.md`.
 
@@ -105,8 +110,10 @@ The maintainer wants the LCD to look like a real radio:
   again for that command on this connection.
 - **Unanswered:** a command with no report gets one read after 0.5 s. If
   that goes unanswered too, the value is taken as unknown (lamp off).
-- **Poll:** what the LCD shows is read once a second (frequency, mode,
-  NR, NB, AN, LOCK, TX, TUNE), skipping what a knob is setting right now.
+- **Poll:** what the LCD shows (frequency, mode, NR, NB, AN, LOCK, TX,
+  TUNE) is read every `[radio] poll_ms` (default 1000, 0 = off, at least
+  100; "Poll" in the window's Radio tab, applied at once), skipping what a
+  knob is setting right now.
 - The same rules apply to every server. Don't branch on which program it
   is.
 

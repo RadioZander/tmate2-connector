@@ -78,6 +78,8 @@ The window shows a live copy of the LCD, and you can change all the settings the
 ### Radio connection
 
 - **TCI** (Expert Electronics' standard) works by itself. Only standard TCI commands are used.
+- **What the LCD shows is what the radio reports.** A knob or button reads the current value from the radio before changing it, so a change made in the radio software's own window is never undone.
+- **Polling** catches changes the radio software doesn't announce (piHPSDR announces only frequency, mode, split and MOX). What the LCD shows is read every second by default. Set the period in the window's Radio tab ("Poll", applied at once) or as `poll_ms` in the file; turn it off for software that announces everything, such as Thetis.
 - **Pacing** (`pacing = "auto"`) is for a radio that can't keep up with the knob, such as one reached over a network. Once the radio's replies start to fall behind, the connector waits for each one before sending the newest value. While the radio keeps up, nothing is held back.
   - The numbers behind it were tested on Thetis and piHPSDR and are built in. On a particularly slow link (a radio reached over the internet, for example) you can override them by adding this table to the configuration file, with only the keys you want to change. Run with `-v` to see each reply's delay and the average in the log.
 

@@ -13,13 +13,17 @@ Other findings:
 
 - **Contrast:** lower is darker. 0–128 is visible and 192 or more blanks the
   LCD. The default is 0.
-- **Refresh:** the display seemed to blank after the probe exited. This isn't
-  confirmed yet, but the connector will refresh continuously regardless.
+- **Timeout:** when the host stops writing, the TMATE-2 clears its display
+  after a short time and shows `--- --- ---`. So a connector that exits, or
+  is ended by another program, leaves the device in a clean state. The
+  connector writes continuously while it runs.
 
 - **Knob function labels:** the bottom row of the LCD shows what each knob
   currently controls. The `E1` and `E2` markers split the row:
-  - E1 (left knob): VOL, SQL, RFG, DRV, NR, NB, AN
+  - E1 (left knob): VOL, RFG, SQL, DRV, NR, NB, AN
   - E2 (right knob): HIGH, LOW, SHIFT, RIT, XIT
+- **Lamps left of the frequency:** NR, NB and AN, matching the E1 row. AN is
+  the automatic notch.
 
 The full LCD map (176 segments, including icons, modes, S-meter bars and
 scale, and knob labels) is in `crates/tmate2-hid/segmap.default.toml`. Every
@@ -80,8 +84,8 @@ The whole display lights and one bit blinks. Type what is blinking, then Enter:
 | a segment of a main-display digit | `main.<digit>.<seg>`: digit 1 is the rightmost; seg is `a`–`g` (a top, b top-right, c bottom-right, d bottom, e bottom-left, f top-left, g middle) |
 | a segment of an S-meter digit | `smeter.<digit>.<seg>` |
 | a decimal point | `dot.mhz` / `dot.khz` (or `dot.<n>`) |
-| an S-meter bar | `smeter.bar.<n>`, counting from the left |
-| an icon or word | a short lowercase name, e.g. `usb`, `lsb`, `cw`, `am`, `fm`, `att`, `nr`, `rx`, `tx`, `vfo_a` |
+| an S-meter bar | `bar.<n>`, counting from the left |
+| an icon or word | its name in `segmap.default.toml`, e.g. `mode.usb`, `mode.cw`, `att`, `rx`, `tx`, `vfo.a`, `left.nr`, `e1.vol` |
 | nothing | just press Enter |
 
 Type `b` to go back and `q` to stop. Progress is saved after every entry to
