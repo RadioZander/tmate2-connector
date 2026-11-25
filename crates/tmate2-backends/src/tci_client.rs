@@ -160,6 +160,10 @@ async fn serve(
     // answers, like the reads, are left out of the -v log unless they
     // change something.
     let mut polled: HashSet<Target> = HashSet::new();
+    // The `_ex` line a server sends after such an answer (Thetis follows
+    // `rx_nr_enable:0,false;` with `rx_nr_enable_ex:0,false,0;`), as
+    // `name_ex:trx`: left out of the log with it.
+    let mut quiet_ex: HashSet<String> = HashSet::new();
 
     macro_rules! send_or_end {
         ($line:expr) => {
@@ -203,11 +207,10 @@ async fn serve(
                 // With -v: what came back, so the echoes can be read against
                 // the "TCI >" lines. The meter reports, several a second,
                 // are left out, and so are answers to the poll that change
-                // nothing.
+                // nothing (see [`quiet`]).
                 let logged = {
                     let s = state.lock().unwrap();
-                    tci::split(&text)
-                        .any(|m| !METERS.contains(&m.name.as_str()) && !quiet_poll_answer(&s, &mut polled, &m))
+                    tci::split(&text).any(|m| !quiet(&s, &mut polled, &mut quiet_ex, &m))
                 };
                 if logged {
                     debug!("TCI < {}", text.trim());
@@ -374,6 +377,31 @@ fn lines_for(cmds: &[Command], state: &mut RadioState, polled: &mut HashSet<Targ
 
 /// `m` answers a poll read and says what we already have: not worth a log
 /// line. A poll answer that changes something is logged.
+/// `m` is left out of the `-v` log: a meter report (also in a server's
+/// `_ex` form, as Thetis's `rx_channel_sensors_ex`), an answer to a poll
+/// read that changes nothing, or the `_ex` line a server sends straight
+/// after such an answer.
+fn quiet(
+    state: &RadioState,
+    polled: &mut HashSet<Target>,
+    quiet_ex: &mut HashSet<String>,
+    m: &tci::Msg,
+) -> bool {
+    let name = m.name.as_str();
+    if METERS.contains(&name.strip_suffix("_ex").unwrap_or(name)) {
+        return true;
+    }
+    let trx = m.args.first().map(String::as_str).unwrap_or("");
+    if name.ends_with("_ex") && quiet_ex.remove(&format!("{name}:{trx}")) {
+        return true;
+    }
+    if quiet_poll_answer(state, polled, m) {
+        quiet_ex.insert(format!("{name}_ex:{trx}"));
+        return true;
+    }
+    false
+}
+
 fn quiet_poll_answer(state: &RadioState, polled: &mut HashSet<Target>, m: &tci::Msg) -> bool {
     let Some(t) = Target::of_report(&m.name, &m.args) else {
         return false;
@@ -429,6 +457,42 @@ mod tests {
 
     use tmate2_core::config::Backend;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn meters_and_unchanged_poll_answers_stay_out_of_the_log() {
+        let mut s = RadioState::default();
+        s.trx_mut(0); // receiver 0 as the init burst leaves it: NR and NB off
+        let mut polled = HashSet::new();
+        let mut ex = HashSet::new();
+        let msg = |line: &str| tci::split(line).next().unwrap();
+        let mut quiet = |s: &RadioState, polled: &mut HashSet<Target>, line: &str| {
+            super::quiet(s, polled, &mut ex, &msg(line))
+        };
+        // Meter reports, plain and in Thetis's _ex form.
+        assert!(quiet(&s, &mut polled, "rx_channel_sensors:0,0,-85.3;"));
+        assert!(quiet(
+            &s,
+            &mut polled,
+            "rx_channel_sensors_ex:0,0,-85.3,-92.5,-114.1;"
+        ));
+        // An answer to a poll read that changes nothing, and the _ex line
+        // after it.
+        polled.insert(Target::of_trx("rx_nr_enable", 0).unwrap());
+        assert!(quiet(&s, &mut polled, "rx_nr_enable:0,false;"));
+        assert!(quiet(&s, &mut polled, "rx_nr_enable_ex:0,false,0;"));
+        // NR switched on in Thetis's window: logged, _ex line and all.
+        assert!(!quiet(&s, &mut polled, "rx_nr_enable:0,true;"));
+        assert!(!quiet(&s, &mut polled, "rx_nr_enable_ex:0,true,0;"));
+        // A poll answer that changes something is logged.
+        polled.insert(Target::of_trx("rx_nb_enable", 0).unwrap());
+        assert!(!quiet(&s, &mut polled, "rx_nb_enable:0,true;"));
+        // Other _ex lines are logged as before.
+        assert!(!quiet(
+            &s,
+            &mut polled,
+            "tx_frequency_ex:3729660,b80m,false,false;"
+        ));
+    }
 
     /// The worked example in TCI-X §4.3.
     const NONCE: &str = "00112233445566778899aabbccddeeff";

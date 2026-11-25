@@ -116,14 +116,29 @@ The maintainer wants the LCD to look like a real radio:
   `device:SunSDR2PRO`.
 - **Filter presets:** Thetis overwrites them when the filter is adjusted, so
   the connector keeps its own per-mode defaults in `[filters]`.
-- **Echo timing:** on the same PC, `vfo` echoes take up to ~85 ms on a fast
-  spin and filter changes ~370 ms, so `pacing = "auto"` does switch on for
-  Thetis. It felt as good as `on` (tested 2026-11-21).
-- **tune_drive:** works only while Thetis's tune power is a slider; with
-  tune power forced to a fixed value Thetis ignores it (no echo).
+- **Reports:** Thetis announces changes made in its own window (VOL, NR,
+  NB, ANF, mode, VFO, lock), so the TMATE-2 follows them even with
+  `poll_ms = 0` (tested 2026-11-25). Each answer to an `rx_nr_enable` /
+  `rx_nb_enable` read is followed by an `rx_*_enable_ex` line, and
+  `rx_channel_sensors_ex` comes five times a second; the `-v` log leaves
+  both out.
+- **Reads:** every read the connector uses (`name:trx;` or `name;`) is
+  answered at once, including `rx_filter_band` with the edges in use.
+  Only `lock;` without a receiver goes unanswered; the connector sends
+  `lock:0;`.
+- **Echo timing:** on the same PC, `vfo` echoes average ~60 ms on a fast
+  spin, up to ~310 ms, so `pacing = "auto"` does switch on (at a 136 ms
+  average, off again at 26 ms) and feels as good as `on`. Filter echoes
+  were 13–15 ms on 2026-11-25 but ~370 ms on 2026-11-21. `trx` (MOX) is
+  echoed ~0.7 s after it is sent; unkeying is sent at once, without a read.
+- **Volume:** `volume` is echoed rounded to 0.1 dB. With the 0.03 dB margin
+  every percent step gets its own echo, so the knob never stalls, and it
+  stops cleanly at 0 and 100 (tested 2026-11-25).
+- **tune_drive:** works only while Thetis's tune power is a slider. With
+  tune power forced to a fixed value, Thetis ignores the change but still
+  answers the read with the fixed value, so the LCD shows that value.
 - **Ignored:** `set_in_focus` (sent, window not raised), so the connector no
-  longer has a focus action. `mon_volume` is
-  echoed, rounded to 0.1 dB.
+  longer has a focus action. `mon_volume` is echoed, rounded to 0.1 dB.
 
 ## piHPSDR TCI behaviour
 
