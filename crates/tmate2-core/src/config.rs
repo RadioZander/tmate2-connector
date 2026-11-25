@@ -64,7 +64,8 @@ pub struct RadioConfig {
     /// How often what the LCD shows is read from the radio, in ms (0 = never).
     #[serde(default = "default_poll_ms")]
     pub poll_ms: u64,
-    /// The numbers behind `pacing`. In the file only: not shown in the window.
+    /// The numbers behind `pacing`: the tested values unless the file has a
+    /// `[radio.pacing_tuning]` table to override them. Not in the window.
     #[serde(default)]
     pub pacing_tuning: PacingTuning,
     pub trx: usize,
@@ -75,8 +76,11 @@ pub struct RadioConfig {
     pub password: Option<String>,
 }
 
-/// The numbers behind `[radio] pacing` (see `[radio.pacing_tuning]` in
-/// `default_config.toml`). Missing keys take these defaults.
+/// The numbers behind `[radio] pacing`. The defaults are the values tested
+/// on Thetis and piHPSDR, and are deliberately not in `default_config.toml`:
+/// a user with a slow link (a radio reached over the internet through
+/// kadrad-hub, say) can add a `[radio.pacing_tuning]` table with just the
+/// keys to change (see the README). Missing keys keep these values.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PacingTuning {
@@ -788,44 +792,26 @@ mod tests {
         assert_eq!(c.buttons.main_push.tap, Some(Action::VfoToggle));
         assert_eq!(c.e1.functions[0], KnobFunction::Vol);
         assert_eq!(c.radio.poll_ms, 1000);
-        // The file's [radio.pacing_tuning] and the built-in defaults agree.
+        // The tested pacing numbers are built in, not in the file.
+        assert!(!DEFAULT_TOML.contains("[radio.pacing_tuning]"));
         assert_eq!(c.radio.pacing_tuning, PacingTuning::default());
     }
 
     #[test]
-    fn pacing_tuning_is_optional_and_checked() {
-        let start = DEFAULT_TOML.find("[radio.pacing_tuning]").unwrap();
-        let end = start
-            + DEFAULT_TOML[start..]
-                .find(
-                    "
-[",
-                )
-                .unwrap()
-            + 1;
-        let without = format!("{}{}", &DEFAULT_TOML[..start], &DEFAULT_TOML[end..]);
-        assert_eq!(
-            Config::parse(&without).unwrap().radio.pacing_tuning,
-            PacingTuning::default()
-        );
-        let with = |a: &str, b: &str| Config::parse(&DEFAULT_TOML.replace(a, b));
-        assert_eq!(
-            with("on_above_ms = 80", "on_above_ms = 150")
-                .unwrap()
-                .radio
-                .pacing_tuning
-                .on_above_ms,
-            150
-        );
-        assert!(with("off_below_ms = 30", "off_below_ms = 90").is_err());
-        assert!(with("smoothing = 0.3", "smoothing = 0").is_err());
-        assert!(with("echo_wait_ms = 300", "echo_wait_ms = 10").is_err());
-        assert!(with(
-            "smoothing = 0.3",
-            "smoothing = 0.3
-bogus = 1"
-        )
-        .is_err());
+    fn pacing_tuning_can_be_added_as_an_override() {
+        let with = |table: &str| Config::parse(&format!("{DEFAULT_TOML}\n[radio.pacing_tuning]\n{table}\n"));
+        // Only the keys given change; the rest keep the tested values.
+        let t = with("on_above_ms = 150\necho_wait_ms = 600")
+            .unwrap()
+            .radio
+            .pacing_tuning;
+        assert_eq!((t.on_above_ms, t.echo_wait_ms), (150, 600));
+        assert_eq!(t.off_below_ms, PacingTuning::default().off_below_ms);
+        // Values that can't work, and misspelt keys, are refused.
+        assert!(with("off_below_ms = 90").is_err());
+        assert!(with("smoothing = 0").is_err());
+        assert!(with("echo_wait_ms = 10").is_err());
+        assert!(with("on_above = 150").is_err());
     }
 
     #[test]

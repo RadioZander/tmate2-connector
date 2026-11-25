@@ -79,6 +79,16 @@ The window shows a live copy of the LCD, and you can change all the settings the
 
 - **TCI** (Expert Electronics' standard) works by itself. Only standard TCI commands are used.
 - **Pacing** (`pacing = "auto"`) is for a radio that can't keep up with the knob, such as one reached over a network. Once the radio's replies start to fall behind, the connector waits for each one before sending the newest value. While the radio keeps up, nothing is held back.
+  - The numbers behind it were tested on Thetis and piHPSDR and are built in. On a particularly slow link (a radio reached over the internet, for example) you can override them by adding this table to the configuration file, with only the keys you want to change. Run with `-v` to see each reply's delay and the average in the log.
+
+    ```toml
+    [radio.pacing_tuning]
+    on_above_ms = 80      # "auto" starts pacing once replies average this many ms...
+    off_below_ms = 30     # ...and stops once they're back under this
+    min_interval_ms = 40  # while paced, at least this long between values
+    echo_wait_ms = 300    # ...and send the next anyway after this long with no reply
+    smoothing = 0.3       # how much each new reply counts in the average (0 to 1)
+    ```
 - **TCI-X** (`tcix = "auto"`), by Mike G0KAD, is used when the server offers it.
   - The connector sends only the commands the server says it accepts, and skips knob functions the radio can't do.
   - It uses the radio's own AF and RF gain, filter presets, band stack and antenna tuner.

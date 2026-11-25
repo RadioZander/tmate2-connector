@@ -20,7 +20,9 @@ tcix = "auto"
 #   "off"  - send every step at once
 #   "auto" - send at once while the radio keeps up; when its replies fall
 #            behind, wait for each before sending the newest value
-#   "on"   - always wait for the radio's reply (or echo_wait_ms) between values
+#   "on"   - always wait for the radio's reply (or 0.3 s) between values
+# For a very slow link, the numbers behind pacing can be overridden: see
+# "Pacing" in the README.
 pacing = "auto"
 # How often (ms) to read what the LCD shows from the radio (frequency, mode,
 # NR, NB, AN, LOCK, TX, TUNE), for software that doesn't report changes made
@@ -35,22 +37,6 @@ trx = 0
 # file is plain text, so keep it private if you put the password here.
 # user = "your-callsign"
 # password = ""
-
-# The numbers behind pacing. They are only in this file, not in the window:
-# the defaults suit most radios, so change them only to try something out,
-# and watch the -v log ("echo vfo:0,0: 142 ms, average 118 ms (paced)").
-[radio.pacing_tuning]
-# "auto": pace a dial or knob once the radio's replies average this many ms...
-on_above_ms = 80
-# ...and send every value again once they are back under this.
-off_below_ms = 30
-# While paced: at least this many ms between values...
-min_interval_ms = 40
-# ...and send the next anyway if the radio hasn't replied after this many ms.
-echo_wait_ms = 300
-# How much each new reply counts in the average, from just above 0 (a slow,
-# steady average) to 1 (only the latest reply).
-smoothing = 0.3
 
 [display]
 # LCD contrast in percent: 100 is darkest, 0 is faintest.
