@@ -507,6 +507,7 @@ mod tests {
             pacing: tmate2_core::config::Pacing::Auto,
             poll_ms: 1000,
             pacing_tuning: Default::default(),
+            names: Default::default(),
             trx: 0,
             user: Some("g0kad".into()),
             password: Some(password.into()),

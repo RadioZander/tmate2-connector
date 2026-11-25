@@ -5,7 +5,7 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item, Value};
 
 use tmate2_core::config::{
     Action, Backend, ButtonAction, Config, KnobFunction, Pacing, Readout, TcixMode, TxMeter, TxReadout,
-    VolumeScale,
+    VolumeScale, WindowMode,
 };
 
 /// Set `table.key = v`, keeping the comments above the key and the spacing /
@@ -23,6 +23,52 @@ fn set(doc: &mut DocumentMut, table: &str, key: &str, v: impl Into<Value>) {
         }
         None => {
             tbl.insert(key, Item::Value(new));
+        }
+    }
+}
+
+/// Write `[radio.names]`: change the names that changed, keeping their
+/// comments, add new ones and drop removed ones. A file with no names and
+/// no table is left as it is.
+fn set_names(doc: &mut DocumentMut, names: &std::collections::BTreeMap<String, String>) {
+    let has_table = doc.get("radio").and_then(|r| r.get("names")).is_some();
+    if names.is_empty() && !has_table {
+        return;
+    }
+    let Some(radio) = doc
+        .entry("radio")
+        .or_insert(toml_edit::table())
+        .as_table_like_mut()
+    else {
+        return;
+    };
+    let Some(t) = radio
+        .entry("names")
+        .or_insert(toml_edit::table())
+        .as_table_like_mut()
+    else {
+        return;
+    };
+    let gone: Vec<String> = t
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !names.contains_key(k))
+        .collect();
+    for k in gone {
+        t.remove(&k);
+    }
+    for (k, v) in names {
+        let mut new = Value::from(v.as_str());
+        match t.get_mut(k) {
+            Some(item) => {
+                if let Some(old) = item.as_value() {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                *item = Item::Value(new);
+            }
+            None => {
+                t.insert(k, Item::Value(new));
+            }
         }
     }
 }
@@ -71,6 +117,13 @@ pub fn pacing_str(p: Pacing) -> &'static str {
     }
 }
 
+pub fn window_mode_str(m: WindowMode) -> &'static str {
+    match m {
+        WindowMode::Mini => "mini",
+        WindowMode::Full => "full",
+    }
+}
+
 pub fn readout_str(r: Readout) -> &'static str {
     match r {
         Readout::Dbm => "dbm",
@@ -99,6 +152,7 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     set(doc, "radio", "pacing", pacing_str(r.pacing));
     set(doc, "radio", "poll_ms", r.poll_ms as i64);
     set(doc, "radio", "trx", r.trx as i64);
+    set_names(doc, &r.names);
 
     let d = &c.display;
     set(doc, "display", "contrast", d.contrast as i64);
@@ -117,6 +171,7 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     );
     set(doc, "display", "readout", readout_str(d.readout));
     set(doc, "display", "flash_ms", d.flash_ms as i64);
+    set(doc, "window", "start", window_mode_str(c.window.start));
     set(
         doc,
         "display",
@@ -217,6 +272,39 @@ mod tests {
         let again = Config::parse(&text).unwrap();
         assert_eq!(again.radio.port, 40001);
         assert_eq!(again.buttons.f2.tap, Some(Action::Mode("USB".into())));
+    }
+
+    #[test]
+    fn server_names_are_added_changed_and_removed() {
+        let text = format!(
+            "{DEFAULT_TOML}\n[radio.names]\n# the shack PC\n\"localhost:50001\" = \"Thetis\"\n\"10.0.0.2:40001\" = \"G2\"\n"
+        );
+        let mut doc: DocumentMut = text.parse().unwrap();
+        let mut c = Config::parse(&text).unwrap();
+        // Renamed through the window (it connects to 127.0.0.1:50001),
+        // one removed, one added.
+        c.radio.set_server_name("Thetis 2.10");
+        c.radio.names.remove("10.0.0.2:40001");
+        c.radio.names.insert("g2-pi.local:40001".into(), "piHPSDR".into());
+        write(&mut doc, &c);
+        let out = doc.to_string();
+        assert!(
+            out.contains("# the shack PC\n\"localhost:50001\" = \"Thetis 2.10\""),
+            "{out}"
+        );
+        assert!(!out.contains("10.0.0.2"), "{out}");
+        let again = Config::parse(&out).unwrap();
+        assert_eq!(again.radio.names, c.radio.names);
+        assert_eq!(again.radio.server_name(), Some("Thetis 2.10"));
+        // A file without names gets a table only once a name is given.
+        let mut doc: DocumentMut = DEFAULT_TOML.parse().unwrap();
+        let mut c = Config::default();
+        c.radio.set_server_name("Thetis");
+        write(&mut doc, &c);
+        assert_eq!(
+            Config::parse(&doc.to_string()).unwrap().radio.server_name(),
+            Some("Thetis")
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@ use eframe::egui::{self, Color32, RichText};
 use tokio::sync::watch;
 
 use tmate2_core::config::{
-    Action, ButtonAction, Config, KnobFunction, Pacing, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
-    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS, POLL_MIN_MS,
+    server_label, Action, ButtonAction, Config, KnobFunction, Pacing, RadioConfig, Readout, TcixMode,
+    TxMeter, TxReadout, VolumeScale, WindowMode, AGC_MODES, BACKLIGHT_PRESETS as PRESETS, POLL_MIN_MS,
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
 
@@ -51,7 +51,7 @@ const STEP_CHOICES: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
 const HIGHLIGHT: Duration = Duration::from_millis(1500);
 const ALL_SEGMENTS_FOR: Duration = Duration::from_secs(20);
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Tab {
     Buttons,
     Knobs,
@@ -59,6 +59,114 @@ enum Tab {
     Display,
     Radio,
     Log,
+}
+
+const TABS: [(Tab, &str); 6] = [
+    (Tab::Buttons, "Buttons"),
+    (Tab::Knobs, "Knobs"),
+    (Tab::Tuning, "Tuning"),
+    (Tab::Display, "Display"),
+    (Tab::Radio, "Radio"),
+    (Tab::Log, "Log"),
+];
+
+/// Full mode: opens at a size where every tab fits without scrolling.
+const FULL_DEFAULT: egui::Vec2 = egui::vec2(620.0, 740.0);
+const FULL_MIN: egui::Vec2 = egui::vec2(560.0, 520.0);
+/// Mini mode: the status line and the mimic.
+const MINI_DEFAULT: egui::Vec2 = egui::vec2(480.0, 225.0);
+const MINI_MIN: egui::Vec2 = egui::vec2(220.0, 100.0);
+/// The mimic's height in full mode: dragged with the bar under it. It
+/// can't grow past what the window's width allows.
+const LCD_DEFAULT_H: f32 = 200.0;
+const LCD_MIN_H: f32 = 60.0;
+/// The grab bar under the mimic.
+const GRIP_H: f32 = 12.0;
+
+/// How the window looks on this machine. Kept in eframe's own storage
+/// (`%APPDATA%\tmate2-connector\data` on Windows, `~/.local/share/
+/// tmate2-connector` on Linux), not in config.toml: screens differ between
+/// PCs, and the config file can be copied from one to another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowState {
+    mini: bool,
+    /// Mini mode stays above other windows.
+    on_top: bool,
+    /// Each mode's last size, so switching goes back to it.
+    full: Option<egui::Vec2>,
+    mini_size: Option<egui::Vec2>,
+    tab: Tab,
+    /// The mimic's height in full mode.
+    lcd_h: f32,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        WindowState {
+            mini: false,
+            on_top: false,
+            full: None,
+            mini_size: None,
+            tab: Tab::Buttons,
+            lcd_h: LCD_DEFAULT_H,
+        }
+    }
+}
+
+const WINDOW_KEY: &str = "tmate2-window";
+
+impl WindowState {
+    /// `mini=0;on_top=0;full=620x740;mini_size=480x225;tab=Buttons;lcd_h=200`
+    fn to_text(self) -> String {
+        let size = |s: Option<egui::Vec2>| s.map_or_else(String::new, |s| format!("{:.0}x{:.0}", s.x, s.y));
+        format!(
+            "mini={};on_top={};full={};mini_size={};tab={:?};lcd_h={:.0}",
+            u8::from(self.mini),
+            u8::from(self.on_top),
+            size(self.full),
+            size(self.mini_size),
+            self.tab,
+            self.lcd_h
+        )
+    }
+
+    /// Anything missing or unreadable keeps its default.
+    fn parse(text: &str) -> WindowState {
+        let mut w = WindowState::default();
+        let size = |v: &str| {
+            let (x, y) = v.split_once('x')?;
+            let s = egui::vec2(x.trim().parse().ok()?, y.trim().parse().ok()?);
+            (s.x >= 50.0 && s.y >= 50.0 && s.x <= 10_000.0 && s.y <= 10_000.0).then_some(s)
+        };
+        for (k, v) in text.split(';').filter_map(|kv| kv.split_once('=')) {
+            match k.trim() {
+                "mini" => w.mini = v.trim() == "1",
+                "on_top" => w.on_top = v.trim() == "1",
+                "full" => w.full = size(v),
+                "mini_size" => w.mini_size = size(v),
+                "lcd_h" => {
+                    if let Ok(h) = v.trim().parse::<f32>() {
+                        w.lcd_h = h.clamp(LCD_MIN_H, 10_000.0);
+                    }
+                }
+                "tab" => {
+                    if let Some((t, _)) = TABS.iter().find(|(t, _)| format!("{t:?}") == v.trim()) {
+                        w.tab = *t;
+                    }
+                }
+                _ => {}
+            }
+        }
+        w
+    }
+
+    fn size_now(&mut self) -> &mut Option<egui::Vec2> {
+        if self.mini {
+            &mut self.mini_size
+        } else {
+            &mut self.full
+        }
+    }
 }
 
 struct App {
@@ -74,7 +182,12 @@ struct App {
     mode_cycle_text: String,
     status: Option<(String, bool)>,
     radio_cfg_tx: watch::Sender<RadioConfig>,
-    tab: Tab,
+    window: WindowState,
+    /// The first frame has set the window's minimum size and stacking.
+    window_set_up: bool,
+    /// A mode switch asked for this size: until the window has it (or a
+    /// second has passed), its size isn't recorded for the new mode.
+    resizing: Option<(egui::Vec2, std::time::Instant)>,
 }
 
 pub fn run(
@@ -86,11 +199,15 @@ pub fn run(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TMATE-2 Connector")
-            .with_inner_size([760.0, 720.0])
-            .with_min_inner_size([560.0, 480.0]),
+            // Names eframe's storage folder (see WindowState).
+            .with_app_id("tmate2-connector")
+            .with_inner_size(FULL_DEFAULT)
+            // The smaller mode's minimum, so a window last closed in mini
+            // mode comes back at its size; the first frame sets full mode's.
+            .with_min_inner_size(MINI_MIN),
         ..Default::default()
     };
-    let app = App {
+    let mut app = App {
         shared,
         path,
         map: SegmentMap::builtin(),
@@ -100,10 +217,21 @@ pub fn run(
         draft: cfg,
         status: None,
         radio_cfg_tx,
-        tab: Tab::Buttons,
+        window: WindowState::default(),
+        window_set_up: false,
+        resizing: None,
     };
-    eframe::run_native("TMATE-2 Connector", options, Box::new(|_cc| Ok(Box::new(app))))
-        .map_err(|e| anyhow::anyhow!("GUI failed: {e}"))
+    eframe::run_native(
+        "TMATE-2 Connector",
+        options,
+        Box::new(|cc| {
+            if let Some(text) = cc.storage.and_then(|s| s.get_string(WINDOW_KEY)) {
+                app.window = WindowState::parse(&text);
+            }
+            Ok(Box::new(app))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("GUI failed: {e}"))
 }
 
 fn dot(ui: &mut egui::Ui, ok: bool) {
@@ -277,22 +405,30 @@ impl App {
         }
     }
 
+    /// The server connected to: its friendly name from `[radio.names]` (as
+    /// being edited, so a new name shows at once), and its address.
+    fn server(&self) -> (Option<String>, String) {
+        let mut r = self.saved.radio.clone();
+        r.names = self.draft.radio.names.clone();
+        (r.server_name().map(str::to_string), server_label(&r.host, r.port))
+    }
+
     fn status_bar(&self, ui: &mut egui::Ui) {
         let radio = self.shared.radio.lock().unwrap().clone();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             dot(ui, self.shared.device_connected.load(Ordering::SeqCst));
             ui.label("TMATE-2");
             ui.separator();
             dot(ui, radio.connected);
             let r = &self.saved.radio;
             if radio.connected {
-                ui.label(format!(
-                    "Radio: {} via TCI {}:{} ({})",
-                    radio.device.as_deref().unwrap_or("?"),
-                    r.host,
-                    r.port,
-                    radio.protocol.as_deref().unwrap_or("?")
-                ));
+                // Not the `device:` the server reports: TCI servers all name
+                // a SunSDR model whatever the radio is.
+                let protocol = radio.protocol.as_deref().unwrap_or("?");
+                ui.label(match self.server() {
+                    (Some(name), at) => format!("Radio: {name} (TCI {at}, {protocol})"),
+                    (None, at) => format!("Radio: TCI {at} ({protocol})"),
+                });
                 ui.separator();
                 ui.label(match &radio.tcix {
                     Some(m) => format!("TCI-X: yes ({} capabilities)", m.len()),
@@ -356,8 +492,10 @@ impl App {
                         ui.label(label);
                     }
                     let ButtonAction { tap, hold } = self.draft.buttons.get_mut(b);
-                    ui.horizontal(|ui| action_picker(ui, (label, "tap"), tap));
-                    ui.horizontal(|ui| action_picker(ui, (label, "hold"), hold));
+                    // A text box for mode: / agc: / raw: goes under its
+                    // picker, so the row never needs more width.
+                    ui.vertical(|ui| action_picker(ui, (label, "tap"), tap));
+                    ui.vertical(|ui| action_picker(ui, (label, "hold"), hold));
                     ui.end_row();
                 }
             });
@@ -411,6 +549,27 @@ impl App {
 
     fn tuning_tab(&mut self, ui: &mut egui::Ui) {
         let t = &mut self.draft.tuning;
+        // The steps wrap on a narrow window, so they sit above the grid
+        // rather than in it: a grid row centres its cells, and the second
+        // line would land on the row below.
+        ui.label("Tuning steps");
+        ui.horizontal_wrapped(|ui| {
+            for s in STEP_CHOICES {
+                let mut on = t.steps_hz.contains(&s);
+                if ui.checkbox(&mut on, step_text(s)).changed() {
+                    if on {
+                        t.steps_hz.push(s);
+                        t.steps_hz.sort_unstable();
+                    } else if t.steps_hz.len() > 1 {
+                        t.steps_hz.retain(|x| *x != s);
+                    }
+                }
+            }
+        });
+        if !t.steps_hz.contains(&t.step_hz) {
+            t.step_hz = t.steps_hz[0];
+        }
+        ui.add_space(6.0);
         egui::Grid::new("tuning")
             .num_columns(2)
             .spacing([16.0, 8.0])
@@ -422,24 +581,6 @@ impl App {
                         .text("0 off · 5 normal · 10 strong"),
                 );
                 ui.end_row();
-                ui.label("Tuning steps");
-                ui.horizontal_wrapped(|ui| {
-                    for s in STEP_CHOICES {
-                        let mut on = t.steps_hz.contains(&s);
-                        if ui.checkbox(&mut on, step_text(s)).changed() {
-                            if on {
-                                t.steps_hz.push(s);
-                                t.steps_hz.sort_unstable();
-                            } else if t.steps_hz.len() > 1 {
-                                t.steps_hz.retain(|x| *x != s);
-                            }
-                        }
-                    }
-                });
-                ui.end_row();
-                if !t.steps_hz.contains(&t.step_hz) {
-                    t.step_hz = t.steps_hz[0];
-                }
                 ui.label("Starting step");
                 egui::ComboBox::from_id_salt("startstep")
                     .selected_text(step_text(t.step_hz))
@@ -516,6 +657,15 @@ impl App {
                 ui.label("Show knob values for (ms)");
                 ui.add(egui::DragValue::new(&mut d.flash_ms).range(0..=5000).speed(50));
                 ui.end_row();
+                ui.label("This window opens in").on_hover_text(
+                    "Mini: the connection status and the LCD. Full: with all the settings.                      Takes effect next time the connector starts.",
+                );
+                let w = &mut self.draft.window;
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut w.start, WindowMode::Mini, "mini");
+                    ui.radio_value(&mut w.start, WindowMode::Full, "full");
+                });
+                ui.end_row();
             });
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -541,6 +691,22 @@ impl App {
                 ui.end_row();
                 ui.label("Port");
                 ui.add(egui::DragValue::new(&mut r.port).range(1..=65535));
+                ui.end_row();
+                ui.label("Name").on_hover_text(
+                    "Shown instead of the address, e.g. Thetis. Kept in [radio.names] \
+                     for this host and port, so each server keeps its own.",
+                );
+                let mut name = r
+                    .name_key()
+                    .and_then(|k| r.names.get(k))
+                    .cloned()
+                    .unwrap_or_default();
+                if ui
+                    .add(egui::TextEdit::singleline(&mut name).hint_text(server_label(&r.host, r.port)))
+                    .changed()
+                {
+                    r.set_server_name(&name);
+                }
                 ui.end_row();
                 ui.label("TCI-X extensions");
                 ui.horizontal(|ui| {
@@ -648,9 +814,11 @@ impl App {
         match result {
             Ok(cfg) => {
                 // Reconnect only for a change the connection uses: the poll
-                // period is the engine's, and already applied live.
+                // period is the engine's, and already applied live, and the
+                // server names are only shown.
                 let connection = RadioConfig {
                     poll_ms: self.saved.radio.poll_ms,
+                    names: self.saved.radio.names.clone(),
                     ..cfg.radio.clone()
                 };
                 if connection != self.saved.radio {
@@ -679,23 +847,172 @@ fn step_text(hz: u64) -> String {
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        if self.shared.stop.load(Ordering::SeqCst) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+impl App {
+    /// Switch between full and mini mode, each at its own last size. Mini
+    /// mode has no title bar.
+    fn set_mini(&mut self, ctx: &egui::Context, mini: bool) {
+        if mini == self.window.mini {
+            return;
         }
-        ctx.request_repaint_after(Duration::from_millis(50));
+        self.window.mini = mini;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!mini));
+        let (size, min) = if mini {
+            (self.window.mini_size.unwrap_or(MINI_DEFAULT), MINI_MIN)
+        } else {
+            (self.window.full.unwrap_or(FULL_DEFAULT), FULL_MIN)
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        self.resizing = Some((size, std::time::Instant::now()));
+        self.apply_window_level(ctx);
+    }
 
+    /// Above other windows only in mini mode, and only if asked for.
+    fn apply_window_level(&self, ctx: &egui::Context) {
+        let level = if self.window.mini && self.window.on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+    }
+
+    /// Remember the window's size for the mode it's in, once a mode switch
+    /// has finished resizing it.
+    fn note_window_size(&mut self, ctx: &egui::Context) {
+        let Some(now) = ctx.input(|i| i.viewport().inner_rect).map(|r| r.size()) else {
+            return;
+        };
+        if let Some((want, since)) = self.resizing {
+            let arrived = (now - want).length() < 2.0;
+            if !arrived && since.elapsed() < Duration::from_secs(1) {
+                return;
+            }
+            self.resizing = None;
+        }
+        *self.window.size_now() = Some(now);
+    }
+
+    /// Mini mode: the connection status and the mimic, with no title bar.
+    /// Drag anywhere but a button to move the window, use the corner grip
+    /// to size it, and double-click to go back to full mode.
+    fn mini_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let radio = self.shared.radio.lock().unwrap().clone();
+        egui::CentralPanel::default().show(ui, |ui| {
+            // Behind everything else, so the buttons still take their clicks.
+            let back = ui.interact(
+                ui.max_rect(),
+                egui::Id::unique("mini-move"),
+                egui::Sense::click_and_drag(),
+            );
+            if back.drag_started_by(egui::PointerButton::Primary) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if back.double_clicked() {
+                self.set_mini(ctx, false);
+            }
+            ui.horizontal(|ui| {
+                dot(ui, self.shared.device_connected.load(Ordering::SeqCst));
+                ui.label("TMATE-2");
+                dot(ui, radio.connected);
+                // The server's friendly name, or where it is: not the
+                // `device:` it reports, as TCI servers all name a SunSDR
+                // model whatever the radio is.
+                let (name, at) = self.server();
+                ui.label(name.as_deref().unwrap_or(&at))
+                    .on_hover_text(if radio.connected {
+                        format!("Connected to the TCI server at {at}")
+                    } else {
+                        format!("Connecting to the TCI server at {at} …")
+                    });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("×").on_hover_text("Close the connector").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if ui
+                        .button("Full")
+                        .on_hover_text("All the settings (or double-click)")
+                        .clicked()
+                    {
+                        self.set_mini(ctx, false);
+                    }
+                    if ui
+                        .checkbox(&mut self.window.on_top, "On top")
+                        .on_hover_text("Keep this window above the others")
+                        .changed()
+                    {
+                        self.apply_window_level(ctx);
+                    }
+                });
+            });
+            let report = self.shared.lcd.lock().unwrap().clone();
+            let space = ui.available_size();
+            lcd::show(ui, space, &report, &self.map);
+            resize_corner(ui, ctx);
+        });
+    }
+
+    /// Full mode: status, the mimic with a grab bar to size it, the
+    /// settings tabs, and Save / Revert.
+    fn full_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Panel::top("status").show(ui, |ui| {
             ui.add_space(2.0);
-            self.status_bar(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui
+                    .button("Mini")
+                    .on_hover_text("Just the status and the LCD")
+                    .clicked()
+                {
+                    self.set_mini(ctx, true);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.status_bar(ui)
+                });
+            });
             ui.add_space(2.0);
         });
 
+        // The mimic, with a grab bar under it to size it apart from the
+        // window. Its height is kept with the window state.
+        egui::Panel::top("lcd").resizable(false).show(ui, |ui| {
+            let report = self.shared.lcd.lock().unwrap().clone();
+            let width = ui.available_width();
+            let fits = width / lcd::ASPECT;
+            let h = self.window.lcd_h.clamp(LCD_MIN_H, fits.max(LCD_MIN_H));
+            lcd::show(ui, egui::vec2(width, h), &report, &self.map);
+            if let Some(dy) = grip(ui) {
+                // Start from what is shown, so dragging up from a mimic held
+                // back by the window's width moves it at once.
+                self.window.lcd_h = (h + dy).clamp(LCD_MIN_H, fits.max(LCD_MIN_H));
+            }
+        });
+
+        self.actions_bar(ui);
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (t, name) in TABS {
+                    ui.selectable_value(&mut self.window.tab, t, name);
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match self.window.tab {
+                    Tab::Buttons => self.buttons_tab(ui),
+                    Tab::Knobs => self.knobs_tab(ui),
+                    Tab::Tuning => self.tuning_tab(ui),
+                    Tab::Display => self.display_tab(ui),
+                    Tab::Radio => self.radio_tab(ui),
+                    Tab::Log => self.log_tab(ui),
+                });
+        });
+    }
+
+    fn actions_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("actions").show(ui, |ui| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let dirty = self.dirty();
                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
                     self.save();
@@ -718,42 +1035,129 @@ impl eframe::App for App {
                     };
                     ui.label(RichText::new(msg).color(c));
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(self.path.display().to_string()).small().weak());
-                });
+                // Wraps onto its own line when the window is narrow.
+                ui.label(RichText::new(self.path.display().to_string()).small().weak());
             });
             ui.add_space(4.0);
         });
+    }
+}
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            let report = self.shared.lcd.lock().unwrap().clone();
-            ui.vertical_centered(|ui| lcd::show(ui, &report, &self.map));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                for (t, name) in [
-                    (Tab::Buttons, "Buttons"),
-                    (Tab::Knobs, "Knobs"),
-                    (Tab::Tuning, "Tuning"),
-                    (Tab::Display, "Display"),
-                    (Tab::Radio, "Radio"),
-                    (Tab::Log, "Log"),
-                ] {
-                    ui.selectable_value(&mut self.tab, t, name);
-                }
-            });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| match self.tab {
-                    Tab::Buttons => self.buttons_tab(ui),
-                    Tab::Knobs => self.knobs_tab(ui),
-                    Tab::Tuning => self.tuning_tab(ui),
-                    Tab::Display => self.display_tab(ui),
-                    Tab::Radio => self.radio_tab(ui),
-                    Tab::Log => self.log_tab(ui),
-                });
-        });
+/// With no title bar, a grip in the window's lower right corner to size it.
+fn resize_corner(ui: &mut egui::Ui, ctx: &egui::Context) {
+    let corner = ui.ctx().content_rect().max;
+    let rect = egui::Rect::from_min_max(corner - egui::vec2(14.0, 14.0), corner);
+    let response = ui
+        .interact(rect, egui::Id::unique("mini-resize"), egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeSouthEast);
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+            egui::ResizeDirection::SouthEast,
+        ));
+    }
+    let c = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("mini-grip"),
+    ));
+    for d in [4.0, 8.0, 12.0] {
+        painter.line_segment(
+            [corner - egui::vec2(d, 2.0), corner - egui::vec2(2.0, d)],
+            egui::Stroke::new(1.0, c),
+        );
+    }
+}
+
+/// The grab bar under the mimic: a short double line, and a vertical
+/// resize cursor over it. Returns how far it was dragged this frame.
+fn grip(ui: &mut egui::Ui) -> Option<f32> {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), GRIP_H), egui::Sense::drag());
+    let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    let c = if response.hovered() || response.dragged() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    for dy in [-2.0, 2.0] {
+        let y = rect.center().y + dy;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.center().x - 20.0, y),
+                egui::pos2(rect.center().x + 20.0, y),
+            ],
+            egui::Stroke::new(1.0, c),
+        );
+    }
+    response.dragged().then(|| response.drag_delta().y)
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        if self.shared.stop.load(Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint_after(Duration::from_millis(50));
+
+        if !self.window_set_up {
+            // The window came back as it was last closed (`window.mini`);
+            // open it in the mode the config asks for, at that mode's size.
+            self.window_set_up = true;
+            let min = if self.window.mini { MINI_MIN } else { FULL_MIN };
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.window.mini));
+            self.apply_window_level(&ctx);
+            self.set_mini(&ctx, self.saved.window.start == WindowMode::Mini);
+        }
+        self.note_window_size(&ctx);
+
+        if self.window.mini {
+            self.mini_ui(ui, &ctx);
+        } else {
+            self.full_ui(ui, &ctx);
+        }
 
         self.apply_live();
+    }
+
+    /// eframe calls this now and then and on exit; it also saves the
+    /// window's place and egui's panel sizes (the mimic's height).
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(WINDOW_KEY, self.window.to_text());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_state_round_trips() {
+        let w = WindowState {
+            mini: true,
+            on_top: true,
+            full: Some(egui::vec2(633.0, 712.0)),
+            mini_size: Some(egui::vec2(400.0, 160.0)),
+            tab: Tab::Radio,
+            lcd_h: 150.0,
+        };
+        assert_eq!(WindowState::parse(&w.to_text()), w);
+        assert_eq!(
+            WindowState::parse(&WindowState::default().to_text()),
+            WindowState::default()
+        );
+    }
+
+    #[test]
+    fn a_damaged_window_state_falls_back_to_defaults() {
+        assert_eq!(WindowState::parse(""), WindowState::default());
+        let w = WindowState::parse("mini=1;full=junk;mini_size=10x10;tab=Nope;extra=1");
+        assert!(w.mini);
+        assert_eq!((w.full, w.mini_size, w.tab), (None, None, Tab::Buttons));
     }
 }
