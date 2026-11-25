@@ -34,7 +34,6 @@ const FRESH: Duration = Duration::from_millis(250);
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// How often what the LCD shows is read from the radio, for changes the
 /// radio makes without reporting them.
-const POLL: Duration = Duration::from_millis(1000);
 /// Window for measuring main-knob speed (acceleration).
 const ACCEL_WINDOW: Duration = Duration::from_millis(100);
 
@@ -789,10 +788,15 @@ impl Engine {
     }
 
     /// Read what the LCD shows (frequency, mode, NR, NB, AN, LOCK, transmit)
-    /// every [`POLL`], for changes the radio makes without reporting them.
+    /// every `radio.poll_ms`, for changes the radio makes without reporting
+    /// them.
     /// Not what a knob here is setting right now.
     fn poll(&mut self, now: Instant, state: &mut RadioState, out: &mut Vec<Command>) {
-        if !state.connected || self.last_poll.is_some_and(|t| now.duration_since(t) < POLL) {
+        let every = Duration::from_millis(self.cfg.radio.poll_ms);
+        if !state.connected
+            || every.is_zero()
+            || self.last_poll.is_some_and(|t| now.duration_since(t) < every)
+        {
             return;
         }
         self.last_poll = Some(now);
@@ -1645,7 +1649,7 @@ pub(crate) mod tests {
         }
         assert!(e.tick(now + Duration::from_millis(500), &mut s).is_empty());
         // Not what a knob here is setting right now.
-        let later = now + POLL;
+        let later = now + Duration::from_millis(e.config().radio.poll_ms);
         heard(&mut s, "vfo", &["0", "0"], later);
         for c in e.handle(turn(Encoder::Main, 1), later, &mut s) {
             s.sent(&c);
@@ -1662,6 +1666,33 @@ pub(crate) mod tests {
                 "tune"
             ]
         );
+    }
+
+    #[test]
+    fn the_poll_follows_poll_ms() {
+        let polls = |e: &mut Engine, s: &mut RadioState, at: Instant| {
+            e.tick(at, s)
+                .iter()
+                .filter(|c| matches!(c, Command::Poll(_)))
+                .count()
+        };
+        let now = Instant::now();
+        // Off: nothing is ever read.
+        let mut cfg = Config::default();
+        cfg.radio.poll_ms = 0;
+        let mut e = Engine::new(cfg.clone());
+        let mut s = connected();
+        assert_eq!(polls(&mut e, &mut s, now), 0);
+        assert_eq!(polls(&mut e, &mut s, now + Duration::from_secs(10)), 0);
+        // Every 300 ms: read again once the reads are answered and 300 ms
+        // have passed, not before.
+        cfg.radio.poll_ms = 300;
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        assert!(polls(&mut e, &mut s, now) > 0);
+        s.reading.clear();
+        assert_eq!(polls(&mut e, &mut s, now + Duration::from_millis(299)), 0);
+        assert!(polls(&mut e, &mut s, now + Duration::from_millis(300)) > 0);
     }
 
     #[test]

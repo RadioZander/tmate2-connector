@@ -97,6 +97,7 @@ pub fn write(doc: &mut DocumentMut, c: &Config) {
     set(doc, "radio", "port", r.port as i64);
     set(doc, "radio", "tcix", tcix_str(r.tcix));
     set(doc, "radio", "pacing", pacing_str(r.pacing));
+    set(doc, "radio", "poll_ms", r.poll_ms as i64);
     set(doc, "radio", "trx", r.trx as i64);
 
     let d = &c.display;

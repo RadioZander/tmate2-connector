@@ -15,7 +15,7 @@ use tokio::sync::watch;
 
 use tmate2_core::config::{
     Action, ButtonAction, Config, KnobFunction, Pacing, RadioConfig, Readout, TcixMode, TxMeter, TxReadout,
-    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS,
+    VolumeScale, AGC_MODES, BACKLIGHT_PRESETS as PRESETS, POLL_MIN_MS,
 };
 use tmate2_hid::{Button, Encoder, InputEvent, SegmentMap};
 
@@ -561,6 +561,31 @@ impl App {
                 ui.label("Receiver (trx)");
                 ui.add(egui::DragValue::new(&mut r.trx).range(0..=7));
                 ui.end_row();
+                ui.label("Poll").on_hover_text(
+                    "How often to read what the LCD shows from the radio, for software that \
+                     doesn't report changes made in its own window. Applies at once.",
+                );
+                ui.horizontal(|ui| {
+                    let mut on = r.poll_ms != 0;
+                    if ui.checkbox(&mut on, "every").changed() {
+                        r.poll_ms = if on { 1000 } else { 0 };
+                    }
+                    // The box clamps whatever it holds into its range, even
+                    // greyed out, so while off it shows a copy, not the 0.
+                    let mut off_copy = 1000;
+                    let value = if on { &mut r.poll_ms } else { &mut off_copy };
+                    ui.add_enabled(
+                        on,
+                        egui::DragValue::new(value)
+                            .range(POLL_MIN_MS..=10_000)
+                            .speed(10)
+                            .suffix(" ms"),
+                    );
+                    if !on {
+                        ui.label("off");
+                    }
+                });
+                ui.end_row();
             });
         ui.add_space(6.0);
         ui.label("TCI-X auto: uses TCI-X if the server offers it, otherwise plain TCI.");
@@ -594,6 +619,7 @@ impl App {
         // Radio connection changes wait for Save (no reconnect per keystroke).
         c.radio = self.saved.radio.clone();
         c.radio.trx = self.draft.radio.trx;
+        c.radio.poll_ms = self.draft.radio.poll_ms;
         c
     }
 
@@ -621,7 +647,13 @@ impl App {
         })();
         match result {
             Ok(cfg) => {
-                if cfg.radio != self.saved.radio {
+                // Reconnect only for a change the connection uses: the poll
+                // period is the engine's, and already applied live.
+                let connection = RadioConfig {
+                    poll_ms: self.saved.radio.poll_ms,
+                    ..cfg.radio.clone()
+                };
+                if connection != self.saved.radio {
                     let _ = self.radio_cfg_tx.send(cfg.radio.clone());
                 }
                 let _ = self.shared.config_tx.lock().unwrap().send(cfg.clone());

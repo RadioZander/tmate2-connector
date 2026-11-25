@@ -5,32 +5,52 @@
 //! each step than the dial takes to make one, and was still tuning long
 //! after the dial had stopped. The pacer keeps one value in flight per
 //! [`Target`] (command, transceiver, VFO): the next goes when the server
-//! has echoed the last, or after [`ECHO_WAIT`]; the newest waits and the
+//! has echoed the last, or after `echo_wait_ms`; the newest waits and the
 //! steps in between are dropped.
 //!
 //! With [`Pacing::Auto`] that happens only for a target whose echoes have
-//! fallen behind ([`SLOW`]), so a server that keeps up, or never echoes,
-//! gets every value at once.
+//! fallen behind (`on_above_ms`), so a server that keeps up, or never
+//! echoes, gets every value at once. The numbers are `[radio.pacing_tuning]`
+//! ([`PacingTuning`]).
 
 use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
-use tmate2_core::config::Pacing;
+use tmate2_core::config::{Pacing, PacingTuning};
 use tmate2_core::{Command, Target};
 
-/// While paced, values go no more often than this (25 a second)…
-pub const PACE: Duration = Duration::from_millis(40);
-/// …and not before the server has echoed the last one, or this long has
-/// passed without an echo.
-pub const ECHO_WAIT: Duration = Duration::from_millis(300);
-/// `auto`: a target is paced once its echoes take this long on average…
-pub const SLOW: Duration = Duration::from_millis(80);
-/// …and sent freely again once they are back under this.
-pub const FAST: Duration = Duration::from_millis(30);
+/// [`PacingTuning`] as durations.
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    /// While paced, values go no more often than this…
+    pace: Duration,
+    /// …and not before the server has echoed the last one, or this long has
+    /// passed without an echo.
+    echo_wait: Duration,
+    /// `auto`: a target is paced once its echoes take this long on average…
+    slow: Duration,
+    /// …and sent freely again once they are back under this.
+    fast: Duration,
+    /// The weight of each new echo in the average.
+    smoothing: f32,
+}
+
+impl From<&PacingTuning> for Timing {
+    fn from(t: &PacingTuning) -> Timing {
+        Timing {
+            pace: Duration::from_millis(t.min_interval_ms),
+            echo_wait: Duration::from_millis(t.echo_wait_ms),
+            slow: Duration::from_millis(t.on_above_ms),
+            fast: Duration::from_millis(t.off_below_ms),
+            smoothing: t.smoothing.clamp(f32::MIN_POSITIVE, 1.0),
+        }
+    }
+}
 
 pub struct Pacer {
     mode: Pacing,
+    timing: Timing,
     slots: Vec<Slot>,
 }
 
@@ -52,8 +72,8 @@ struct Slot {
 }
 
 impl Slot {
-    fn free_at(&self) -> Instant {
-        self.sent + if self.awaiting { ECHO_WAIT } else { PACE }
+    fn free_at(&self, t: &Timing) -> Instant {
+        self.sent + if self.awaiting { t.echo_wait } else { t.pace }
     }
 
     fn sent_now(&mut self, now: Instant) {
@@ -82,9 +102,10 @@ fn label(t: &Target) -> String {
 }
 
 impl Pacer {
-    pub fn new(mode: Pacing) -> Pacer {
+    pub fn new(mode: Pacing, tuning: &PacingTuning) -> Pacer {
         Pacer {
             mode,
+            timing: Timing::from(tuning),
             slots: Vec::new(),
         }
     }
@@ -124,7 +145,7 @@ impl Pacer {
             });
             return Some(cmd);
         };
-        if self.paced(&self.slots[i]) && now < self.slots[i].free_at() {
+        if self.paced(&self.slots[i]) && now < self.slots[i].free_at(&self.timing) {
             self.slots[i].pending = Some(cmd);
             return None;
         }
@@ -137,24 +158,24 @@ impl Pacer {
     /// The server reported `name:args;`: what was in flight for that
     /// target has landed (or the radio changed it itself).
     pub fn echoed(&mut self, name: &str, args: &[String], now: Instant) {
-        let mode = self.mode;
+        let (mode, t) = (self.mode, self.timing);
         for slot in self.slots.iter_mut().filter(|s| s.target.reported_by(name, args)) {
             slot.awaiting = false;
             if let Some(t0) = slot.since.take() {
                 let sample = now.saturating_duration_since(t0);
                 let lag = match slot.lag {
                     None => sample,
-                    Some(l) => l.mul_f32(0.7) + sample.mul_f32(0.3),
+                    Some(l) => l.mul_f32(1.0 - t.smoothing) + sample.mul_f32(t.smoothing),
                 };
                 slot.lag = Some(lag);
                 let was_slow = slot.slow;
-                if lag >= SLOW {
+                if lag >= t.slow {
                     slot.slow = true;
-                } else if lag <= FAST {
+                } else if lag <= t.fast {
                     slot.slow = false;
                 }
                 // With -v: the echo times behind the pacing, to read against
-                // SLOW and FAST on a real server.
+                // on_above_ms and off_below_ms on a real server.
                 debug!(
                     "echo {}: {} ms, average {} ms{}",
                     label(&slot.target),
@@ -184,8 +205,9 @@ impl Pacer {
     /// The waiting values that may go now.
     pub fn due(&mut self, now: Instant) -> Vec<Command> {
         let mut out = Vec::new();
+        let t = self.timing;
         for slot in &mut self.slots {
-            if slot.pending.is_some() && now >= slot.free_at() {
+            if slot.pending.is_some() && now >= slot.free_at(&t) {
                 out.extend(slot.pending.take());
                 slot.sent_now(now);
             }
@@ -198,7 +220,7 @@ impl Pacer {
         self.slots
             .iter()
             .filter(|s| s.pending.is_some())
-            .map(Slot::free_at)
+            .map(|s| s.free_at(&self.timing))
             .min()
     }
 }
@@ -206,6 +228,44 @@ impl Pacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defaults, as the tests below count on them.
+    const PACE: Duration = Duration::from_millis(40);
+    const ECHO_WAIT: Duration = Duration::from_millis(300);
+
+    fn pacer(mode: Pacing) -> Pacer {
+        Pacer::new(mode, &PacingTuning::default())
+    }
+
+    #[test]
+    fn the_defaults_are_what_the_tests_count_on() {
+        let t = Timing::from(&PacingTuning::default());
+        assert_eq!((t.pace, t.echo_wait), (PACE, ECHO_WAIT));
+        assert_eq!(
+            (t.slow, t.fast),
+            (Duration::from_millis(80), Duration::from_millis(30))
+        );
+    }
+
+    #[test]
+    fn tuning_moves_the_thresholds() {
+        // With on_above_ms raised to 200, a 120 ms echo no longer paces.
+        let tuning = PacingTuning {
+            on_above_ms: 200,
+            ..PacingTuning::default()
+        };
+        for (mut p, paced) in [
+            (pacer(Pacing::Auto), true),
+            (Pacer::new(Pacing::Auto, &tuning), false),
+        ] {
+            let t0 = Instant::now();
+            assert!(p.offer(vfo(0, 1), t0).is_some());
+            echo(&mut p, 0, t0 + ms(120));
+            let t1 = t0 + ms(130);
+            assert!(p.offer(vfo(0, 2), t1).is_some());
+            assert_eq!(p.offer(vfo(0, 3), t1 + ms(1)).is_none(), paced);
+        }
+    }
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -240,7 +300,7 @@ mod tests {
 
     #[test]
     fn off_sends_everything() {
-        let mut p = Pacer::new(Pacing::Off);
+        let mut p = pacer(Pacing::Off);
         let t0 = Instant::now();
         for i in 0..10 {
             assert!(p.offer(vfo(0, i), t0).is_some());
@@ -250,7 +310,7 @@ mod tests {
 
     #[test]
     fn on_keeps_one_in_flight_and_sends_the_newest() {
-        let mut p = Pacer::new(Pacing::On);
+        let mut p = pacer(Pacing::On);
         let t0 = Instant::now();
         assert_eq!(p.offer(vfo(0, 1), t0), Some(vfo(0, 1)));
         assert_eq!(p.offer(vfo(0, 2), t0 + ms(5)), None);
@@ -268,7 +328,7 @@ mod tests {
 
     #[test]
     fn auto_sends_freely_while_the_server_keeps_up() {
-        let mut p = Pacer::new(Pacing::Auto);
+        let mut p = pacer(Pacing::Auto);
         let t0 = Instant::now();
         for i in 0..50u64 {
             let at = t0 + ms(10 * i);
@@ -279,7 +339,7 @@ mod tests {
 
     #[test]
     fn auto_never_holds_back_a_server_that_does_not_echo() {
-        let mut p = Pacer::new(Pacing::Auto);
+        let mut p = pacer(Pacing::Auto);
         let t0 = Instant::now();
         for i in 0..50u64 {
             assert!(p.offer(vfo(0, i), t0 + ms(10 * i)).is_some());
@@ -288,7 +348,7 @@ mod tests {
 
     #[test]
     fn auto_paces_once_echoes_fall_behind_and_recovers() {
-        let mut p = Pacer::new(Pacing::Auto);
+        let mut p = pacer(Pacing::Auto);
         let t0 = Instant::now();
         // A remote radio: the first echo comes 150 ms after the first step.
         assert!(p.offer(vfo(0, 1), t0).is_some());
@@ -313,7 +373,7 @@ mod tests {
 
     #[test]
     fn receivers_and_vfos_are_paced_apart() {
-        let mut p = Pacer::new(Pacing::On);
+        let mut p = pacer(Pacing::On);
         let t0 = Instant::now();
         assert!(p.offer(vfo(0, 1), t0).is_some());
         assert!(p.offer(vfo(1, 1), t0).is_some(), "RX2 has its own slot");
@@ -333,7 +393,7 @@ mod tests {
 
     #[test]
     fn keys_and_modes_are_never_paced() {
-        let mut p = Pacer::new(Pacing::On);
+        let mut p = pacer(Pacing::On);
         let t0 = Instant::now();
         for _ in 0..3 {
             assert!(p.offer(Command::Mox { trx: 0, on: true }, t0).is_some());

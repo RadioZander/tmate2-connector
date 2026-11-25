@@ -155,7 +155,7 @@ async fn serve(
     let mut tcix_deadline: Option<tokio::time::Instant> = None;
     let mut cfg_alive = true;
     let mut user: Option<String> = None;
-    let mut pacer = Pacer::new(cfg.pacing);
+    let mut pacer = Pacer::new(cfg.pacing, &cfg.pacing_tuning);
     // Values read by the once-a-second poll and not yet answered: their
     // answers, like the reads, are left out of the -v log unless they
     // change something.
@@ -441,6 +441,8 @@ mod tests {
             port,
             tcix: TcixMode::Auto,
             pacing: tmate2_core::config::Pacing::Auto,
+            poll_ms: 1000,
+            pacing_tuning: Default::default(),
             trx: 0,
             user: Some("g0kad".into()),
             password: Some(password.into()),
@@ -606,13 +608,15 @@ mod tests {
 
     #[test]
     fn a_dial_is_paced_by_the_servers_echoes() {
-        use crate::pacing::{ECHO_WAIT, PACE};
+        let tuning = tmate2_core::config::PacingTuning::default();
+        let pace = Duration::from_millis(tuning.min_interval_ms);
+        let echo_wait = Duration::from_millis(tuning.echo_wait_ms);
         use tmate2_core::config::Pacing;
         let vfo = |hz| Command::Vfo { trx: 0, vfo: 0, hz };
         let ms = Duration::from_millis;
         let t0 = Instant::now();
         // Pacing "on": what "auto" does once a server falls behind.
-        let mut p = Pacer::new(Pacing::On);
+        let mut p = Pacer::new(Pacing::On, &tuning);
         let echoed = |p: &mut Pacer, line: &str| {
             let m = tci::parse(line).unwrap();
             p.echoed(&m.name, &m.args, t0);
@@ -623,28 +627,28 @@ mod tests {
         assert_eq!(p.offer(vfo(20), t0 + ms(5)), None);
         assert_eq!(p.offer(vfo(30), t0 + ms(10)), None);
         assert!(p.due(t0 + ms(100)).is_empty(), "not before the echo");
-        assert_eq!(p.next_due(), Some(t0 + ECHO_WAIT));
+        assert_eq!(p.next_due(), Some(t0 + echo_wait));
         // The echo of the first lets the newest go, once the pace allows.
         echoed(&mut p, "vfo:0,1,7000000;");
         assert!(p.due(t0 + ms(100)).is_empty(), "the other VFO's echo");
         echoed(&mut p, "vfo:0,0,10;");
         assert_eq!(p.due(t0 + ms(100)), vec![vfo(30)]);
         assert_eq!(p.next_due(), None);
-        // A server that never echoes: one value every ECHO_WAIT.
+        // A server that never echoes: one value every echo_wait.
         assert_eq!(p.offer(vfo(40), t0 + ms(120)), None);
         assert!(p.due(t0 + ms(300)).is_empty());
-        assert_eq!(p.due(t0 + ms(100) + ECHO_WAIT), vec![vfo(40)]);
+        assert_eq!(p.due(t0 + ms(100) + echo_wait), vec![vfo(40)]);
         // Echoed at once, the next still waits out the pace.
         echoed(&mut p, "vfo:0,0,40;");
-        let t1 = t0 + ms(100) + ECHO_WAIT;
+        let t1 = t0 + ms(100) + echo_wait;
         assert_eq!(p.offer(vfo(50), t1 + ms(10)), None);
-        assert_eq!(p.due(t1 + PACE), vec![vfo(50)]);
+        assert_eq!(p.due(t1 + pace), vec![vfo(50)]);
         // A knob has a slot of its own; keys and keying aren't paced.
         let af = |pct| Command::AfGain { trx: 0, pct };
         assert_eq!(p.offer(af(1), t1), Some(af(1)));
         assert_eq!(p.offer(af(2), t1), None);
         echoed(&mut p, "af_gain:0,1;");
-        assert_eq!(p.due(t1 + PACE), vec![af(2)]);
+        assert_eq!(p.due(t1 + pace), vec![af(2)]);
         let key = Command::Mox { trx: 0, on: true };
         assert_eq!(p.offer(key.clone(), t1), Some(key.clone()));
         assert_eq!(p.offer(key.clone(), t1), Some(key));

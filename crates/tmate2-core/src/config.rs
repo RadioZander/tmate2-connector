@@ -61,6 +61,12 @@ pub struct RadioConfig {
     /// How dial and knob values are paced to the server.
     #[serde(default)]
     pub pacing: Pacing,
+    /// How often what the LCD shows is read from the radio, in ms (0 = never).
+    #[serde(default = "default_poll_ms")]
+    pub poll_ms: u64,
+    /// The numbers behind `pacing`. In the file only: not shown in the window.
+    #[serde(default)]
+    pub pacing_tuning: PacingTuning,
     pub trx: usize,
     /// TCI-X login (§4.3), for a server that asks for one.
     #[serde(default)]
@@ -68,6 +74,43 @@ pub struct RadioConfig {
     #[serde(default)]
     pub password: Option<String>,
 }
+
+/// The numbers behind `[radio] pacing` (see `[radio.pacing_tuning]` in
+/// `default_config.toml`). Missing keys take these defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PacingTuning {
+    /// `auto`: pace a target once its echoes average this long (ms)…
+    pub on_above_ms: u64,
+    /// …and send freely again once they are back under this.
+    pub off_below_ms: u64,
+    /// While paced, the shortest gap between values (ms).
+    pub min_interval_ms: u64,
+    /// While paced, how long to wait for an echo before sending anyway (ms).
+    pub echo_wait_ms: u64,
+    /// How much each new echo counts in the average, 0 to 1 (1 = only the
+    /// newest echo).
+    pub smoothing: f32,
+}
+
+impl Default for PacingTuning {
+    fn default() -> Self {
+        PacingTuning {
+            on_above_ms: 80,
+            off_below_ms: 30,
+            min_interval_ms: 40,
+            echo_wait_ms: 300,
+            smoothing: 0.3,
+        }
+    }
+}
+
+fn default_poll_ms() -> u64 {
+    1000
+}
+
+/// The shortest poll period, in ms: reads faster than this only fill the log.
+pub const POLL_MIN_MS: u64 = 100;
 
 /// Environment variable that supplies the TCI-X password instead of the
 /// configuration file.
@@ -679,6 +722,23 @@ impl Config {
                 t.step_hz
             ));
         }
+        let p = &self.radio.pacing_tuning;
+        if p.off_below_ms >= p.on_above_ms {
+            return bad("radio.pacing_tuning: off_below_ms must be less than on_above_ms".into());
+        }
+        if p.min_interval_ms < 1 || p.echo_wait_ms < p.min_interval_ms {
+            return bad(
+                "radio.pacing_tuning: min_interval_ms must be at least 1, and echo_wait_ms at least min_interval_ms"
+                    .into(),
+            );
+        }
+        if !(p.smoothing > 0.0 && p.smoothing <= 1.0) {
+            return bad("radio.pacing_tuning: smoothing must be above 0 and at most 1".into());
+        }
+        let poll = self.radio.poll_ms;
+        if poll != 0 && poll < POLL_MIN_MS {
+            return bad(format!("radio.poll_ms must be 0 (off) or at least {POLL_MIN_MS}"));
+        }
         if self.display.tx_power_max_w < 1 {
             return bad("display.tx_power_max_w must be at least 1".into());
         }
@@ -727,6 +787,56 @@ mod tests {
         assert_eq!(c.buttons.f1.hold, None, "hold = \"none\" means no hold");
         assert_eq!(c.buttons.main_push.tap, Some(Action::VfoToggle));
         assert_eq!(c.e1.functions[0], KnobFunction::Vol);
+        assert_eq!(c.radio.poll_ms, 1000);
+        // The file's [radio.pacing_tuning] and the built-in defaults agree.
+        assert_eq!(c.radio.pacing_tuning, PacingTuning::default());
+    }
+
+    #[test]
+    fn pacing_tuning_is_optional_and_checked() {
+        let start = DEFAULT_TOML.find("[radio.pacing_tuning]").unwrap();
+        let end = start
+            + DEFAULT_TOML[start..]
+                .find(
+                    "
+[",
+                )
+                .unwrap()
+            + 1;
+        let without = format!("{}{}", &DEFAULT_TOML[..start], &DEFAULT_TOML[end..]);
+        assert_eq!(
+            Config::parse(&without).unwrap().radio.pacing_tuning,
+            PacingTuning::default()
+        );
+        let with = |a: &str, b: &str| Config::parse(&DEFAULT_TOML.replace(a, b));
+        assert_eq!(
+            with("on_above_ms = 80", "on_above_ms = 150")
+                .unwrap()
+                .radio
+                .pacing_tuning
+                .on_above_ms,
+            150
+        );
+        assert!(with("off_below_ms = 30", "off_below_ms = 90").is_err());
+        assert!(with("smoothing = 0.3", "smoothing = 0").is_err());
+        assert!(with("echo_wait_ms = 300", "echo_wait_ms = 10").is_err());
+        assert!(with(
+            "smoothing = 0.3",
+            "smoothing = 0.3
+bogus = 1"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn poll_ms_is_off_or_at_least_the_minimum() {
+        let with = |v: &str| DEFAULT_TOML.replace("poll_ms = 1000", &format!("poll_ms = {v}"));
+        assert_eq!(Config::parse(&with("0")).unwrap().radio.poll_ms, 0);
+        assert_eq!(Config::parse(&with("250")).unwrap().radio.poll_ms, 250);
+        assert!(Config::parse(&with("50")).is_err());
+        // An older file without the key polls every second.
+        let old = DEFAULT_TOML.replace("poll_ms = 1000\n", "");
+        assert_eq!(Config::parse(&old).unwrap().radio.poll_ms, 1000);
     }
 
     #[test]
