@@ -390,10 +390,14 @@ impl RadioState {
                 .is_some_and(|h| now.saturating_duration_since(*h) < fresh)
     }
 
-    /// The read for `t`, unless one is already out or this server doesn't
-    /// answer them.
+    /// The read for `t`, unless one is already out, this server doesn't
+    /// answer them, or its TCI-X manifest doesn't list the command.
     pub fn read(&mut self, t: Target, now: Instant) -> Option<Command> {
-        if !t.readable() || self.unreadable.contains(t.name) || self.reading.contains_key(&t) {
+        if !t.readable()
+            || !self.can_read(t.name)
+            || self.unreadable.contains(t.name)
+            || self.reading.contains_key(&t)
+        {
             return None;
         }
         self.reading.insert(t, now);
@@ -560,6 +564,15 @@ impl RadioState {
     /// With TCI-X, only commands the manifest lists as writable.
     pub fn can_send(&self, command: &str) -> bool {
         self.tcix.as_ref().is_none_or(|m| m.writable(command))
+    }
+
+    /// The server can say what this is. Without TCI-X, every readable
+    /// command is tried. With TCI-X, only those the manifest lists: a read
+    /// of anything else is refused (`error:<command>,unsupported`, TCI-X
+    /// B3), every poll, as `tune` on a radio with no tune carrier, or
+    /// base `lock` where the radio's lock is `dial_lock`.
+    pub fn can_read(&self, command: &str) -> bool {
+        self.tcix.as_ref().is_none_or(|m| m.has(command))
     }
 
     /// TCI-X negotiated and the server takes this extension command. Used to
