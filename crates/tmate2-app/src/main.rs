@@ -12,6 +12,7 @@ mod device;
 mod gui;
 mod launch;
 mod shared;
+mod version;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -37,7 +38,7 @@ use crate::shared::{LogBuffer, Shared};
 #[derive(Parser)]
 #[command(
     name = "tmate2",
-    version,
+    version = version::BUILD.as_str(),
     about = "Connects the ELAD / Woodbox TMATE-2 to your radio"
 )]
 struct Cli {
@@ -166,6 +167,7 @@ fn main() -> Result<()> {
         anyhow::anyhow!("the TMATE-2 connector is already running")
     })?;
 
+    info!("TMATE-2 connector {}", version::BUILD.as_str());
     let path = cli.config.unwrap_or_else(default_config_path);
     let cfg = load_config(&path)?;
     info!("configuration: {}", path.display());

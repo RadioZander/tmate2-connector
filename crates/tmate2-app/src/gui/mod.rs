@@ -658,8 +658,8 @@ impl App {
                 ui.end_row();
                 ui.label("Volume (E1 VOL)");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut d.volume_scale, VolumeScale::Percent, "0-100 (like Thetis)");
                     ui.radio_value(&mut d.volume_scale, VolumeScale::Db, "dB (-60 to 0)");
+                    ui.radio_value(&mut d.volume_scale, VolumeScale::Percent, "0-100 (like Thetis)");
                 });
                 ui.end_row();
                 ui.label("Transmit bargraph");
@@ -829,7 +829,11 @@ impl App {
     }
 
     fn about_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading(format!("TMATE-2 Connector {}", env!("CARGO_PKG_VERSION")));
+        ui.label(
+            egui::RichText::new(format!("TMATE-2 Connector {}", crate::version::BUILD.as_str()))
+                .heading()
+                .strong(),
+        );
         ui.label("Connects the ELAD / Woodbox TMATE-2 to your radio over TCI.");
         ui.label("By Zander M1YAP.");
         ui.add_space(8.0);

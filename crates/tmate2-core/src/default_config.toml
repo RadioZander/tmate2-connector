@@ -57,11 +57,11 @@ readout = "dbm"
 # How long (ms) a value you change with E1 / E2 is shown on the main display.
 flash_ms = 1500
 # How the volume knobs (vol, rx_vol, mon_vol) show and step the volume:
+#   "db"      - TCI's own -60 to 0 dB (1 dB per click). Works with any TCI
+#               software, including piHPSDR (whole dB from -40 to 0).
 #   "percent" - 0 to 100, matching Thetis's AF sliders (1 per click). Needs
 #               software that keeps fractions of a dB, like Thetis.
-#   "db"      - TCI's own -60 to 0 dB (1 dB per click), for other software.
-#               Use this with piHPSDR, which works in whole dB from -40 to 0.
-volume_scale = "percent"
+volume_scale = "db"
 # While transmitting, the S-meter scale is switched off and:
 #   tx_meter   (bargraph):     "power", "swr" (1.8:1 at S9, 3:1 full) or "off"
 #   tx_readout (small digits): "watts", "swr" or "off". The readout has no
