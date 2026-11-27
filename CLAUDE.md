@@ -44,7 +44,7 @@ controller. It is written in Rust, MIT-licensed and public on GitHub.
 | `tmate2-hid` | HID reports, encoder tracking, LCD segment map (`segmap.default.toml`), 7-segment font |
 | `tmate2-core` | config (`default_config.toml` holds the commented defaults and is the single source of defaults), radio state, `Command`, mapping `engine`, LCD `render` |
 | `tmate2-backends` | TCI parser/encoder (`tci.rs`, tests against `tests/fixtures/thetis-init.tci`), WebSocket client with reconnect and TCI-X negotiation and login, `pacing.rs` (dial / knob pacing: `[radio] pacing = off|auto|on`; `auto` paces a target only once its echoes take over 80 ms; the tested numbers are built in (`PacingTuning::default`), not in `default_config.toml`; a user on a slow link can add a `[radio.pacing_tuning]` table to override them, and the window never shows it). At `-v` the client logs lines both ways (`TCI >` / `TCI <`; meter reports, also in their `_ex` form, and poll reads and their unchanged answers are left out) and the pacer logs each matched echo's delay and average, and when `auto` switches a target to paced or back |
-| `tmate2-app` | the `tmate2` binary: device thread, `launch.rs` (`--host` / `--port` override `[radio]` for one run and are never saved, `--minimized`; one copy at a time by locking `tmate2.lock` in the local data folder, so a second copy exits), GUI (`gui/`, saves with `toml_edit` so comments are kept), headless mode. The GUI has a mini mode (status and LCD mimic, no title bar, optional always-on-top) and a full mode (settings tabs, a grab bar under the mimic sizes it). `[window] start = "mini"|"full"` picks the opening mode; window sizes, the mimic height, on-top and the tab are per machine in eframe's storage (`WindowState`, `%APPDATA%\tmate2-connector\data`), never in config.toml. Server labels show `[radio.names]` or `host:port`, never TCI's `device:` (always a SunSDR). Rows that can wrap must not sit in an `egui::Grid` (a grid centres its cells, so the wrapped line overlaps the next row) |
+| `tmate2-app` | the `tmate2` binary: device thread, `launch.rs` (`--host` / `--port` override `[radio]` for one run and are never saved, `--minimized`; one copy at a time by locking `tmate2.lock` in the local data folder, so a second copy exits), `version.rs` + `build.rs` (the build label from `git describe`: `0.3.0`, `0.3.0+4 (08dc2d5)`, `… modified`; shown in About, `--version` and the first log line; don't bump the version per PR, and a source copy without `.git` can set `TMATE2_BUILD`), GUI (`gui/`, saves with `toml_edit` so comments are kept), headless mode. The GUI has a mini mode (status and LCD mimic, no title bar, optional always-on-top) and a full mode (settings tabs, a grab bar under the mimic sizes it). `[window] start = "mini"|"full"` picks the opening mode; window sizes, the mimic height, on-top and the tab are per machine in eframe's storage (`WindowState`, `%APPDATA%\tmate2-connector\data`), never in config.toml. Server labels show `[radio.names]` or `host:port`, never TCI's `device:` (always a SunSDR). Rows that can wrap must not sit in an `egui::Grid` (a grid centres its cells, so the wrapped line overlaps the next row) |
 | `tmate2-probe` | hardware diagnostics: `list`, `dump`, `walk`, `demo`, `rgb`, `contrast`, `text`, ... |
 
 To add a button action:
@@ -91,9 +91,10 @@ The maintainer wants the LCD to look like a real radio:
   shows power or SWR, with 1.8:1 at the S9 bar.
 - The small readout shows -dBm (or S units with no "S" prefix, which would
   read as a 5). On transmit it shows watts, or SWR as `1_2` for 1.2:1.
-- Volume is 0–100 like Thetis (TCI sends dB: -60 to 0 dB maps linearly to
-  0–100). Thetis truncates when converting back, so aim 0.03 dB above each
-  step.
+- Volume defaults to TCI's own dB scale (`volume_scale = "db"`, -60 to 0,
+  1 dB per click), which works on every server. `"percent"` shows 0–100 like
+  Thetis (-60 to 0 dB maps linearly to 0–100). Thetis truncates when
+  converting back, so aim 0.03 dB above each step.
 
 ## Radio state
 

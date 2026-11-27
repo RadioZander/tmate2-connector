@@ -1449,6 +1449,13 @@ pub(crate) mod tests {
         s
     }
 
+    /// The default config with the volume on Thetis's 0-100 scale.
+    fn percent() -> Config {
+        let mut cfg = Config::default();
+        cfg.display.volume_scale = VolumeScale::Percent;
+        cfg
+    }
+
     fn turn(encoder: Encoder, delta: i32) -> InputEvent {
         InputEvent::Turned { encoder, delta }
     }
@@ -1850,7 +1857,7 @@ pub(crate) mod tests {
 
     #[test]
     fn e1_needs_two_counts_per_click_and_changes_volume() {
-        let mut e = Engine::new(Config::default());
+        let mut e = Engine::new(percent());
         let mut s = connected();
         let now = Instant::now();
         assert!(input(&mut e, turn(Encoder::E1, 1), now, &mut s).is_empty());
@@ -2314,7 +2321,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unlabelled_knob_functions() {
-        let mut cfg = Config::default();
+        let mut cfg = percent();
         cfg.e1.functions = vec![
             KnobFunction::CwSpeed,
             KnobFunction::RxVol,
@@ -2724,7 +2731,7 @@ pub(crate) mod tests {
     #[test]
     fn vol_is_the_programs_volume_where_the_server_has_one() {
         // KADRAD's relay: the hub's manifest plus its own `volume`.
-        let mut e = Engine::new(Config::default());
+        let mut e = Engine::new(percent());
         let mut s = ic7100(&["volume,rw,range,-60,0,0.1,db"]);
         s.volume_db = Some(-30.0);
         let now = Instant::now();

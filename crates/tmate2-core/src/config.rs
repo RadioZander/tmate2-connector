@@ -313,11 +313,11 @@ pub const AGC_CYCLE: [&str; 4] = ["long", "slow", "normal", "fast"];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeScale {
-    /// 0-100, like Thetis's Master AF (1 per click).
-    #[default]
-    Percent,
     /// TCI's own -60..0 dB (1 dB per click).
+    #[default]
     Db,
+    /// 0-100, like Thetis's Master AF (1 per click).
+    Percent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -880,6 +880,8 @@ mod tests {
         assert_eq!(c.e1.functions[0], KnobFunction::Vol);
         assert_eq!(c.radio.poll_ms, 1000);
         assert_eq!(c.window.start, WindowMode::Mini);
+        assert_eq!(c.display.volume_scale, VolumeScale::Db);
+        assert_eq!(Config::default().display.volume_scale, VolumeScale::Db);
         // The tested pacing numbers are built in, not in the file.
         assert!(!DEFAULT_TOML.contains("[radio.pacing_tuning]"));
         assert_eq!(c.radio.pacing_tuning, PacingTuning::default());
