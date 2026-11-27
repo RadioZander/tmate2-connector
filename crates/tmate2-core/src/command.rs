@@ -230,9 +230,8 @@ enum Scope {
 /// Plain TCI commands whose read form is the command without its value
 /// (`rx_nr_enable:0;`, `volume;`), answered with a report of the value.
 /// Not `start` / `stop`, which a read would set off, nor TCI-X's own.
-/// Not `rx_filter_band`: piHPSDR answers a read with the mode's preset,
-/// not the edges in use, so a filter knob would jump back to the preset.
-/// The filter knobs go by the echoes of what they send.
+/// `rx_filter_band` reads give the edges in use (piHPSDR before
+/// 2026-11-22 gave the mode's preset, dl1ycf/pihpsdr#157).
 const READABLE: &[(&str, Scope)] = &[
     ("vfo", Scope::Vfo),
     ("modulation", Scope::Trx),
@@ -246,6 +245,7 @@ const READABLE: &[(&str, Scope)] = &[
     ("rx_nr_enable", Scope::Trx),
     ("rx_nb_enable", Scope::Trx),
     ("rx_anf_enable", Scope::Trx),
+    ("rx_filter_band", Scope::Trx),
     ("rx_nf_enable", Scope::Trx),
     ("rx_apf_enable", Scope::Trx),
     ("rx_bin_enable", Scope::Trx),
