@@ -808,14 +808,14 @@ mod tests {
         // Never a read that could start the radio, nor TCI-X's own commands.
         assert!(Command::Power(true).query().is_none());
         assert!(Command::AfGain { trx: 0, pct: 1 }.query().is_none());
-        // piHPSDR answers a filter read with the preset, not the edges in use.
-        assert!(Command::Filter {
-            trx: 0,
-            low: 100,
-            high: 2800
-        }
-        .query()
-        .is_none());
+        assert_eq!(
+            q(Command::Filter {
+                trx: 0,
+                low: 100,
+                high: 2800
+            }),
+            "rx_filter_band:0;"
+        );
     }
 
     #[test]

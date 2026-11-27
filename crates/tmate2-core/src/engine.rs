@@ -1583,6 +1583,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_filter_changed_at_the_radio_is_read_before_it_is_changed_here() {
+        // The edges dragged in piHPSDR's window: no report reaches us.
+        let mut cfg = Config::default();
+        cfg.e2.functions = vec![KnobFunction::Width];
+        let mut e = Engine::new(cfg);
+        let mut s = connected();
+        let now = Instant::now();
+        heard(&mut s, "rx_filter_band", &["0"], now);
+        let later = now + Duration::from_millis(5000);
+        let read = Command::Query(
+            Command::Filter {
+                trx: 0,
+                low: 0,
+                high: 0,
+            }
+            .target()
+            .unwrap(),
+        );
+        assert_eq!(e.handle(turn(Encoder::E2, 2), later, &mut s), vec![read]);
+        // The radio says 300-2000: wider from there, not from 100-2800.
+        s.trx_mut(0).filter = Some((300, 2000));
+        heard(&mut s, "rx_filter_band", &["0", "300", "2000"], later);
+        let next = e.tick(later, &mut s);
+        assert_eq!(
+            next[0],
+            Command::Filter {
+                trx: 0,
+                low: 275,
+                high: 2025
+            }
+        );
+    }
+
+    #[test]
     fn a_server_that_does_not_answer_reads_is_not_waited_for_again() {
         let mut cfg = Config::default();
         cfg.display.volume_scale = VolumeScale::Db;
